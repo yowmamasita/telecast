@@ -186,7 +186,7 @@ templ ChannelItem(ch *db.Channel, isActive bool) {
 
 templ Player(ch *db.Channel, streamURL string) {
 	<div class="player" data-stream-url={ streamURL } data-stream-id={ ch.StreamID } id="player-wrapper">
-		<video id="video-player" autoplay muted></video>
+		<video id="video-player" autoplay muted playsinline></video>
 		<div class="player-info">
 			<div class="player-info-left">
 				<h2 class="now-playing-title">{ ch.Name }</h2>

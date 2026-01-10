@@ -770,43 +770,145 @@ function toggleFullscreen() {
 }
 
 // Picture-in-Picture
+let pipRequestPending = false;
+let documentPipWindow = null; // For Document PIP API
+
+// Check if Document Picture-in-Picture API is available (more stable than video PIP)
+function hasDocumentPiP() {
+  return 'documentPictureInPicture' in window;
+}
+
+// Try Document PIP API first (Chrome 116+), fallback to video PIP
+async function enterDocumentPiP(video) {
+  if (!hasDocumentPiP()) {
+    return false;
+  }
+  
+  try {
+    // Request a new PIP window
+    documentPipWindow = await window.documentPictureInPicture.requestWindow({
+      width: video.videoWidth || 640,
+      height: video.videoHeight || 360,
+    });
+    
+    // Copy styles
+    const style = documentPipWindow.document.createElement('style');
+    style.textContent = `
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      body { background: #000; overflow: hidden; }
+      video { width: 100%; height: 100%; object-fit: contain; }
+    `;
+    documentPipWindow.document.head.appendChild(style);
+    
+    // Move video to PIP window
+    documentPipWindow.document.body.appendChild(video);
+    
+    // Handle PIP window close
+    documentPipWindow.addEventListener('pagehide', () => {
+      // Move video back to main document
+      const playerWrapper = document.getElementById('player-wrapper');
+      if (playerWrapper && video) {
+        playerWrapper.insertBefore(video, playerWrapper.firstChild);
+      }
+      documentPipWindow = null;
+      updatePiPIcon();
+    });
+    
+    return true;
+  } catch (err) {
+    console.error("Document PIP failed:", err.message);
+    return false;
+  }
+}
+
 function togglePiP() {
   const video = document.getElementById("video-player");
   if (!video) return;
 
   // Check if PiP is supported
-  if (!document.pictureInPictureEnabled) {
+  if (!document.pictureInPictureEnabled && !hasDocumentPiP()) {
     console.warn("Picture-in-Picture is not supported in this browser");
     return;
   }
 
   // Check if video is allowed to enter PiP
   if (video.disablePictureInPicture) {
-    console.warn("PiP is disabled for this video");
+    return;
+  }
+
+  // Prevent multiple simultaneous PIP requests
+  if (pipRequestPending) {
+    return;
+  }
+
+  // Check if we're in Document PIP mode
+  if (documentPipWindow) {
+    documentPipWindow.close();
+    documentPipWindow = null;
     return;
   }
 
   if (document.pictureInPictureElement) {
-    document.exitPictureInPicture().catch(err => {
-      console.error("Error exiting PiP:", err);
-    });
+    pipRequestPending = true;
+    document.exitPictureInPicture()
+      .catch(err => console.error("Error exiting PiP:", err.message))
+      .finally(() => { pipRequestPending = false; });
   } else {
     // Ensure video has metadata loaded before entering PiP
     if (video.readyState < 1) {
-      console.warn("Video not ready for PiP yet, waiting for metadata...");
       video.addEventListener("loadedmetadata", function onMeta() {
         video.removeEventListener("loadedmetadata", onMeta);
-        video.requestPictureInPicture().catch(err => {
-          console.error("Error entering PiP:", err);
-        });
+        requestPiPSafely(video);
       });
       return;
     }
     
-    video.requestPictureInPicture().catch(err => {
-      console.error("Error entering PiP:", err);
-    });
+    requestPiPSafely(video);
   }
+}
+
+// Safely request PIP with error recovery
+async function requestPiPSafely(video) {
+  if (pipRequestPending) {
+    return;
+  }
+  
+  pipRequestPending = true;
+  
+  // Double-check video is still valid
+  if (!video || video.readyState < 1 || video.videoWidth === 0) {
+    pipRequestPending = false;
+    return;
+  }
+  
+  // Try Document PIP API first (more stable, available in Chrome 116+)
+  if (hasDocumentPiP()) {
+    const success = await enterDocumentPiP(video);
+    if (success) {
+      pipRequestPending = false;
+      updatePiPIcon();
+      return;
+    }
+    // Fall through to video PIP if Document PIP failed
+  }
+  
+  // Fallback to regular video PIP
+  // Use requestAnimationFrame to ensure we're in a good state for GPU operations
+  requestAnimationFrame(() => {
+    // Double-check video is still valid
+    if (!video || video.readyState < 1 || video.videoWidth === 0) {
+      pipRequestPending = false;
+      return;
+    }
+    
+    video.requestPictureInPicture()
+      .catch(err => {
+        console.error("Error entering video PiP:", err.message);
+      })
+      .finally(() => {
+        pipRequestPending = false;
+      });
+  });
 }
 
 // Update PiP button state when PiP mode changes
@@ -818,35 +920,15 @@ document.addEventListener("DOMContentLoaded", function() {
   }
 });
 
-// Auto PiP when switching tabs
-let autoPiPEnabled = localStorage.getItem("autoPiP") !== "false"; // Default enabled
-
-document.addEventListener("visibilitychange", function() {
-  if (!autoPiPEnabled) return;
-  if (!document.pictureInPictureEnabled) return;
-  
-  const video = document.getElementById("video-player");
-  if (!video) return;
-  
-  if (document.hidden) {
-    // Tab is hidden - enter PiP if video is playing
-    if (!video.paused && !document.pictureInPictureElement && video.readyState >= 1) {
-      video.requestPictureInPicture().catch(() => {});
-    }
-  } else {
-    // Tab is visible - exit PiP
-    if (document.pictureInPictureElement) {
-      document.exitPictureInPicture().catch(() => {});
-    }
-  }
-});
+let lastInitTime = 0; // Track last initPlayer call time
 
 function updatePiPIcon() {
+  const inPip = !!document.pictureInPictureElement || !!documentPipWindow;
   const btn = document.getElementById("pip-btn");
   const icon = document.getElementById("pip-icon");
   if (!btn || !icon) return;
 
-  if (document.pictureInPictureElement) {
+  if (inPip) {
     btn.classList.add("active");
     // Exit PiP icon
     icon.innerHTML = '<path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9 9h6v6H9z"/>';
@@ -1065,8 +1147,27 @@ function stopStatsUpdates() {
   }
 }
 
-function initPlayer(videoElement, streamUrl) {
+async function initPlayer(videoElement, streamUrl) {
+  const now = Date.now();
   if (!videoElement || !streamUrl) return;
+
+  // Debounce rapid initPlayer calls (ignore if called within 500ms)
+  if (now - lastInitTime < 500) {
+    return;
+  }
+  lastInitTime = now;
+
+  // Exit PIP if active before switching to prevent GPU context conflicts
+  if (documentPipWindow) {
+    documentPipWindow.close();
+    documentPipWindow = null;
+  } else if (document.pictureInPictureElement) {
+    try {
+      await document.exitPictureInPicture();
+    } catch (e) {
+      // Ignore errors
+    }
+  }
 
   // Reset stats
   perfStats.loadStartTime = performance.now();
@@ -1104,9 +1205,15 @@ function initPlayer(videoElement, streamUrl) {
   videoElement.onclick = togglePlay;
   videoElement.ondblclick = toggleFullscreen;
   
+  // Remove any existing PiP listeners before adding new ones to prevent accumulation
+  videoElement.removeEventListener("enterpictureinpicture", updatePiPIcon);
+  videoElement.removeEventListener("leavepictureinpicture", updatePiPIcon);
+  
   // Set up PiP event listeners on the new video element
   videoElement.addEventListener("enterpictureinpicture", updatePiPIcon);
   videoElement.addEventListener("leavepictureinpicture", updatePiPIcon);
+
+
 
   // Check if HLS.js is supported
   if (Hls.isSupported()) {
