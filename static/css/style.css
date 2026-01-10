@@ -92,7 +92,13 @@ html, body {
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.sidebar-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
 }
 
 /* Categories Button */
@@ -109,7 +115,6 @@ html, body {
   justify-content: center;
   border-radius: 6px;
   transition: color 0.2s, background 0.2s;
-  margin-left: auto;
 }
 
 .categories-btn:hover {
@@ -420,7 +425,18 @@ html, body {
 .channel-list {
   flex: 1;
   overflow-y: auto;
-  padding: 0.5rem 0;
+  padding: 0;
+  contain: strict;
+}
+
+/* Virtual Scroll */
+.virtual-scroll-wrapper {
+  contain: layout style;
+}
+
+.virtual-scroll-content {
+  contain: layout style paint;
+  padding: 0 0.5rem;
 }
 
 .channel-list::-webkit-scrollbar {
@@ -460,6 +476,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   transition: color 0.2s;
+  box-sizing: border-box;
 }
 
 .category-header:hover {
@@ -489,12 +506,13 @@ html, body {
   align-items: center;
   gap: 0.75rem;
   padding: 0.625rem 0.75rem;
-  margin: 0.125rem 0;
+  margin: 0;
   border-radius: 6px;
   text-decoration: none;
   color: var(--text-primary);
   transition: background-color 0.2s;
   cursor: pointer;
+  box-sizing: border-box;
 }
 
 .channel-item:hover {
@@ -520,6 +538,76 @@ html, body {
   border-radius: 4px;
   background: var(--bg-tertiary);
   flex-shrink: 0;
+}
+
+/* Favorite Button */
+.favorite-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.25rem;
+  margin-left: auto;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  flex-shrink: 0;
+}
+
+.channel-item:hover .favorite-btn {
+  opacity: 1;
+}
+
+.favorite-btn .heart-icon {
+  fill: var(--text-secondary);
+  transition: fill 0.2s, transform 0.2s;
+}
+
+.favorite-btn:hover .heart-icon {
+  fill: #ef4444;
+  transform: scale(1.1);
+}
+
+/* Favorited state */
+.channel-item.is-favorite .favorite-btn .heart-icon {
+  fill: #ef4444;
+}
+
+.channel-item.is-favorite .favorite-btn {
+  opacity: 1;
+}
+
+/* Favorites Filter Button */
+.favorites-btn {
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0.375rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.favorites-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.favorites-btn.active {
+  color: #ef4444;
+  background: var(--bg-tertiary);
+}
+
+/* Hide empty categories when filtering by favorites */
+.category.hidden-by-favorites {
+  display: none;
 }
 
 .channel-name {
@@ -554,6 +642,8 @@ html, body {
   flex: 1;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .player {
@@ -561,12 +651,16 @@ html, body {
   display: flex;
   flex-direction: column;
   background: #000;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .player video {
   flex: 1;
   width: 100%;
+  min-height: 0;
   background: #000;
+  object-fit: contain;
 }
 
 .player-info {
@@ -577,6 +671,7 @@ html, body {
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
+  flex-shrink: 0;
 }
 
 .player-info-left {
@@ -729,23 +824,429 @@ html, body {
   font-size: 1rem;
 }
 
-/* Responsive */
-@media (max-width: 768px) {
-  .app {
-    flex-direction: column;
+/* Responsive - Mobile Portrait */
+@media (max-width: 768px) and (orientation: portrait) {
+  :root {
+    --sidebar-width: 280px;
+    --player-height: calc((100vw * 3 / 4) + 56px); /* 4:3 video + 2-row info bar */
   }
 
+  .app {
+    flex-direction: column-reverse;
+    height: 100vh;
+  }
+
+  /* Sidebar visible above player on mobile */
   .sidebar {
     width: 100%;
     min-width: 100%;
-    max-height: 40vh;
+    flex: 1;
     border-right: none;
     border-bottom: 1px solid var(--border);
+    transition: none;
+    height: auto;
+    max-height: none;
+    overflow: hidden;
   }
 
+  .app.sidebar-hidden .sidebar {
+    margin-left: 0;
+    pointer-events: auto;
+  }
+
+  /* Hide floating toggle on mobile - sidebar always visible */
+  .sidebar-toggle-floating {
+    display: none !important;
+  }
+
+  /* Hide sidebar toggle in header on mobile */
+  .sidebar .sidebar-toggle {
+    display: none;
+  }
+
+  /* Main content at bottom with fixed height for 16:9 */
+  .main-content {
+    flex: 0 0 auto;
+    height: var(--player-height);
+    min-height: var(--player-height);
+    max-height: var(--player-height);
+    width: 100%;
+  }
+
+  /* Player container */
+  .player-container {
+    height: 100%;
+  }
+
+  .player {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* 4:3 aspect ratio video */
+  .player video {
+    width: 100%;
+    height: calc(100vw * 3 / 4);
+    flex-shrink: 0;
+    object-fit: contain;
+  }
+
+  /* Compact player info bar on mobile - 2 rows */
+  .player-info {
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 0.25rem 0.5rem;
+    gap: 0.125rem 0.375rem;
+    flex-shrink: 0;
+  }
+
+  /* Row 1: channel name + controls */
+  .player-info-left {
+    flex: 1;
+    min-width: 0;
+    order: 1;
+  }
+
+  .now-playing-title {
+    font-size: 0.6875rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* Row 2: network stats */
+  .player-stats {
+    display: flex;
+    order: 3;
+    width: 100%;
+    justify-content: flex-start;
+    gap: 0.75rem;
+    padding-top: 0.125rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.125rem;
+  }
+
+  .player-stats .stat {
+    font-size: 0.625rem;
+    gap: 0.25rem;
+  }
+
+  .player-stats .stat span:last-child {
+    min-width: auto;
+  }
+
+  .player-stats .stat-icon {
+    font-size: 0.5rem;
+  }
+
+  /* Player controls compact on mobile */
+  .player-controls {
+    margin-left: 0;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--border);
+    gap: 0.25rem;
+    flex-shrink: 0;
+    order: 2;
+  }
+
+  /* Touch-friendly control buttons - unchanged size */
+  .control-btn {
+    width: 36px;
+    height: 36px;
+    padding: 0.375rem;
+  }
+
+  .control-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Hide volume slider on mobile to save space */
+  .volume-slider {
+    display: none;
+  }
+
+  /* Sidebar header */
+  .sidebar-header {
+    padding: 0.75rem 1rem;
+  }
+
+  .sidebar-header-actions {
+    gap: 0.5rem;
+  }
+
+  /* Larger tap targets in sidebar */
+  .categories-btn,
+  .favorites-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Search box */
+  .search-box {
+    padding: 0.75rem;
+  }
+
+  .search-box input {
+    padding: 0.75rem 1rem;
+    font-size: 1rem;
+  }
+
+  /* Channel items - larger for touch */
+  .channel-item {
+    padding: 0.75rem;
+    gap: 0.75rem;
+  }
+
+  .channel-icon,
+  .channel-icon-placeholder {
+    width: 40px;
+    height: 40px;
+  }
+
+  .channel-name {
+    font-size: 0.9375rem;
+  }
+
+  /* Always show favorite button on mobile (no hover) */
+  .favorite-btn {
+    opacity: 1;
+    width: 36px;
+    height: 36px;
+  }
+
+  /* Category headers - larger tap target */
+  .category-header {
+    padding: 0.75rem 1rem;
+    font-size: 0.8125rem;
+  }
+
+  /* Popups - full width on mobile */
+  .categories-popup {
+    width: calc(100vw - 2rem);
+    max-width: 320px;
+    max-height: 70vh;
+  }
+
+  .categories-popup-list {
+    height: auto;
+    max-height: 40vh;
+  }
+
+  .category-filter-item {
+    padding: 0.75rem;
+  }
+
+  .category-filter-item input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+
+  /* Secret menu */
+  .secret-menu {
+    width: calc(100vw - 2rem);
+    max-width: 400px;
+  }
+
+  /* Empty player state - compact */
+  .player-empty {
+    height: var(--player-height);
+  }
+
+  .player-empty-icon {
+    width: 48px;
+    height: 48px;
+  }
+
+  .player-empty-content p {
+    font-size: 0.8125rem;
+    padding: 0 1rem;
+  }
+}
+
+/* Extra small screens (phones in portrait) */
+@media (max-width: 480px) {
+  .now-playing-title {
+    font-size: 0.8125rem;
+  }
+
+  .control-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .control-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  /* Full-width popups on very small screens */
+  .categories-popup,
+  .secret-menu {
+    width: calc(100vw - 1rem);
+    left: 0.5rem;
+    right: 0.5rem;
+    transform: translate(0, -50%);
+  }
+}
+
+/* Landscape mode on mobile - 2 column layout */
+@media (max-width: 900px) and (orientation: landscape) {
+  .app {
+    flex-direction: row;
+    height: 100vh;
+  }
+
+  /* Sidebar as left column */
+  .sidebar {
+    width: 280px;
+    min-width: 280px;
+    max-width: 280px;
+    height: 100vh;
+    max-height: 100vh;
+    flex: 0 0 280px;
+    border-right: 1px solid var(--border);
+    border-bottom: none;
+    transition: margin-left 0.3s ease, opacity 0.3s ease;
+  }
+
+  /* Hidden sidebar in landscape */
+  .app.sidebar-hidden .sidebar {
+    margin-left: -280px;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Main content fills remaining space */
   .main-content {
     flex: 1;
-    min-height: 60vh;
+    height: 100vh;
+    max-height: 100vh;
+    min-height: 100vh;
+  }
+
+  .player {
+    height: 100%;
+  }
+
+  .player video {
+    width: 100%;
+    height: calc(100vh - 50px);
+    flex: 1;
+  }
+
+  .player-info {
+    min-height: 50px;
+    padding: 0.375rem 0.75rem;
+  }
+
+  /* Show sidebar toggle in header for landscape */
+  .sidebar .sidebar-toggle {
+    display: flex;
+  }
+
+  /* Show floating toggle only when sidebar is hidden */
+  .sidebar-toggle-floating {
+    display: none !important;
+  }
+
+  .app.sidebar-hidden .sidebar-toggle-floating {
+    display: flex !important;
+    position: fixed;
+    top: 0.5rem;
+    left: 0.5rem;
+    width: 40px;
+    height: 40px;
+    background: rgba(26, 26, 26, 0.9);
+    border: 1px solid var(--border);
+    z-index: 100;
+  }
+
+  /* Compact channel items in landscape */
+  .channel-item {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .channel-icon,
+  .channel-icon-placeholder {
+    width: 32px;
+    height: 32px;
+  }
+
+  .channel-name {
+    font-size: 0.8125rem;
+  }
+
+  .favorite-btn {
+    width: 28px;
+    height: 28px;
+  }
+
+  .search-box input {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+
+  .category-header {
+    padding: 0.5rem 0.75rem;
+  }
+}
+
+/* Touch device optimizations */
+@media (hover: none) and (pointer: coarse) {
+  /* Always show favorite buttons on touch devices */
+  .favorite-btn {
+    opacity: 1;
+  }
+
+  /* Remove hover states that don't work on touch */
+  .channel-item:hover {
+    background: transparent;
+  }
+
+  .channel-item:active {
+    background: var(--bg-tertiary);
+  }
+
+  .control-btn:hover {
+    background: transparent;
+  }
+
+  .control-btn:active {
+    background: var(--bg-tertiary);
+  }
+
+  /* Ensure adequate spacing for touch */
+  .channel-item {
+    min-height: 48px;
+  }
+}
+
+/* Safe area insets for notched phones */
+@supports (padding: env(safe-area-inset-top)) {
+  @media (max-width: 768px) {
+    .sidebar-header {
+      padding-top: calc(0.75rem + env(safe-area-inset-top));
+    }
+
+    .player-info {
+      padding-bottom: env(safe-area-inset-bottom);
+    }
+  }
+
+  @media (max-width: 900px) and (orientation: landscape) {
+    .sidebar {
+      padding-left: env(safe-area-inset-left);
+    }
+
+    .app.sidebar-hidden .sidebar-toggle-floating {
+      left: calc(0.5rem + env(safe-area-inset-left));
+    }
+
+    .player-info {
+      padding-right: calc(0.375rem + env(safe-area-inset-right));
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/bensarmiento/telecast/internal/db"
 )
@@ -19,16 +20,23 @@ templ Index(data IndexData) {
 			<aside class="sidebar">
 				<div class="sidebar-header">
 					<h1 class="logo">Telecast</h1>
-					<button class="categories-btn" onclick="toggleCategoriesPopup()" title="Filter categories">
-						<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-							<path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
-						</svg>
-					</button>
-					<button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar (S)">
-						<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
-							<path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
-						</svg>
-					</button>
+					<div class="sidebar-header-actions">
+						<button id="favorites-btn" class="favorites-btn" onclick="toggleFavoritesFilter()" title="Show favorites only">
+							<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+								<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+							</svg>
+						</button>
+						<button class="categories-btn" onclick="toggleCategoriesPopup()" title="Filter categories">
+							<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+								<path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/>
+							</svg>
+						</button>
+						<button class="sidebar-toggle" onclick="toggleSidebar()" title="Toggle sidebar (S)">
+							<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+								<path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+							</svg>
+						</button>
+					</div>
 				</div>
 				<div id="categories-overlay" class="categories-popup-overlay" onclick="toggleCategoriesPopup()"></div>
 				<div id="categories-popup" class="categories-popup">
@@ -58,18 +66,17 @@ templ Index(data IndexData) {
 				</div>
 				<div class="search-box">
 					<input
+						id="channel-search"
 						type="search"
 						name="q"
 						placeholder={ "Search " + intToStr(data.ChannelCount) + " channels..." }
-						hx-get="/channels/search"
-						hx-trigger="input changed delay:300ms, search"
-						hx-target="#channel-list"
 						autocomplete="off"
 					/>
 				</div>
 				<nav id="channel-list" class="channel-list">
-					@ChannelList(data.Categories, data.Channels, data.CurrentChannel)
+					<!-- Virtual scroller will render here -->
 				</nav>
+				@ChannelData(data.Categories, data.Channels, data.CurrentChannel)
 			</aside>
 			<button class="sidebar-toggle sidebar-toggle-floating" onclick="toggleSidebar()" title="Toggle sidebar (S)">
 				<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
@@ -169,6 +176,11 @@ templ ChannelItem(ch *db.Channel, isActive bool) {
 			<div class="channel-icon-placeholder"></div>
 		}
 		<span class="channel-name">{ ch.Name }</span>
+		<button class="favorite-btn" data-stream-id={ ch.StreamID } title="Toggle favorite">
+			<svg class="heart-icon" viewBox="0 0 24 24" width="14" height="14">
+				<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+			</svg>
+		</button>
 	</a>
 }
 
@@ -289,4 +301,110 @@ templ SearchResults(channels []*db.Channel, current *db.Channel) {
 			}
 		</div>
 	}
+}
+
+// ChannelData outputs JSON data and initializes virtual scroller
+templ ChannelData(categories []*db.Category, channels []*db.Channel, current *db.Channel) {
+	@channelDataScript(categories, channels, current)
+}
+
+func channelDataScript(categories []*db.Category, channels []*db.Channel, current *db.Channel) templ.Component {
+	jsonData := channelsToJSON(categories, channels, current)
+	return templ.Raw(`<script>
+		window.__CHANNEL_DATA__ = ` + jsonData + `;
+		(function() {
+			function initVirtualScroller() {
+				const data = window.__CHANNEL_DATA__;
+				if (!data) return;
+
+				try {
+					const container = document.getElementById('channel-list');
+					if (!container) return;
+
+					virtualChannelList = new VirtualChannelList(container);
+					virtualChannelList.setData(data.categories, data.channels);
+
+					if (data.activeStreamId) {
+						virtualChannelList.setActive(data.activeStreamId);
+						// Scroll to active channel after a short delay to ensure render is complete
+						setTimeout(() => virtualChannelList.scrollToActive(), 100);
+					}
+
+					// Set up search
+					const searchInput = document.getElementById('channel-search');
+					if (searchInput) {
+						let searchTimeout;
+						searchInput.addEventListener('input', function() {
+							clearTimeout(searchTimeout);
+							searchTimeout = setTimeout(() => {
+								virtualChannelList.search(this.value);
+							}, 150);
+						});
+					}
+
+					// Update favorites button state
+					updateFavoritesButton();
+				} catch (e) {
+					console.error('Failed to initialize virtual scroller:', e);
+				}
+			}
+
+			if (document.readyState === 'loading') {
+				document.addEventListener('DOMContentLoaded', initVirtualScroller);
+			} else {
+				initVirtualScroller();
+			}
+		})();
+	</script>`)
+}
+
+func channelsToJSON(categories []*db.Category, channels []*db.Channel, current *db.Channel) string {
+	type catJSON struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	type chJSON struct {
+		StreamID   string `json:"streamId"`
+		Name       string `json:"name"`
+		CategoryID string `json:"categoryId,omitempty"`
+		IconURL    string `json:"iconUrl,omitempty"`
+	}
+	type dataJSON struct {
+		Categories     []catJSON `json:"categories"`
+		Channels       []chJSON  `json:"channels"`
+		ActiveStreamID string    `json:"activeStreamId,omitempty"`
+	}
+
+	data := dataJSON{
+		Categories: make([]catJSON, 0, len(categories)),
+		Channels:   make([]chJSON, 0, len(channels)),
+	}
+
+	for _, cat := range categories {
+		data.Categories = append(data.Categories, catJSON{
+			ID:   cat.CategoryID,
+			Name: cat.Name,
+		})
+	}
+
+	for _, ch := range channels {
+		c := chJSON{
+			StreamID: ch.StreamID,
+			Name:     ch.Name,
+		}
+		if ch.CategoryID.Valid {
+			c.CategoryID = ch.CategoryID.String
+		}
+		if ch.IconURL.Valid {
+			c.IconURL = ch.IconURL.String
+		}
+		data.Channels = append(data.Channels, c)
+	}
+
+	if current != nil {
+		data.ActiveStreamID = current.StreamID
+	}
+
+	b, _ := json.Marshal(data)
+	return string(b)
 }

@@ -5,6 +5,12 @@ let savedVolume = parseInt(localStorage.getItem("volume")) || 100;
 let savedMuted = localStorage.getItem("muted") === "true";
 let hasUserInteracted = false;
 
+// Retry tracking for error recovery
+let networkRetryCount = 0;
+let networkRetryTimeout = null;
+const MAX_NETWORK_RETRIES = 5;
+const INITIAL_RETRY_DELAY = 1000; // 1 second
+
 // Track user interaction
 document.addEventListener("click", () => { hasUserInteracted = true; }, { once: true });
 document.addEventListener("keydown", () => { hasUserInteracted = true; }, { once: true });
@@ -18,12 +24,415 @@ const perfStats = {
   recoveries: 0,
 };
 
+// ===========================================
+// Virtual Scroller for Channel List
+// ===========================================
+class VirtualChannelList {
+  constructor(container, options = {}) {
+    this.container = container;
+    this.itemHeight = options.itemHeight || 52;
+    this.headerHeight = options.headerHeight || 40;
+    this.bufferSize = options.bufferSize || 10;
+
+    this.allChannels = [];
+    this.categories = [];
+    this.flatItems = [];
+    this.filteredItems = [];
+    this.collapsedCategories = new Set();
+    this.activeStreamId = null;
+    this.searchQuery = '';
+
+    this.scrollTop = 0;
+    this.containerHeight = 0;
+
+    this.wrapper = null;
+    this.content = null;
+
+    this.init();
+  }
+
+  init() {
+    // Create wrapper structure
+    this.container.innerHTML = '';
+    this.container.style.overflow = 'auto';
+    this.container.style.position = 'relative';
+
+    this.wrapper = document.createElement('div');
+    this.wrapper.className = 'virtual-scroll-wrapper';
+    this.wrapper.style.position = 'relative';
+    this.wrapper.style.width = '100%';
+
+    this.content = document.createElement('div');
+    this.content.className = 'virtual-scroll-content';
+    this.content.style.position = 'absolute';
+    this.content.style.top = '0';
+    this.content.style.left = '0';
+    this.content.style.right = '0';
+
+    this.wrapper.appendChild(this.content);
+    this.container.appendChild(this.wrapper);
+
+    // Throttled scroll handler
+    let ticking = false;
+    this.container.addEventListener('scroll', () => {
+      if (!ticking) {
+        requestAnimationFrame(() => {
+          this.onScroll();
+          ticking = false;
+        });
+        ticking = true;
+      }
+    });
+
+    // Handle resize
+    this.resizeObserver = new ResizeObserver(() => {
+      this.containerHeight = this.container.clientHeight;
+      this.render();
+    });
+    this.resizeObserver.observe(this.container);
+  }
+
+  setData(categories, channels) {
+    this.categories = categories;
+    this.allChannels = channels;
+    this.buildFlatList();
+    this.applyFilters();
+  }
+
+  buildFlatList() {
+    this.flatItems = [];
+    const channelsByCategory = new Map();
+
+    // Group channels by category
+    for (const ch of this.allChannels) {
+      const catId = ch.categoryId || '__uncategorized__';
+      if (!channelsByCategory.has(catId)) {
+        channelsByCategory.set(catId, []);
+      }
+      channelsByCategory.get(catId).push(ch);
+    }
+
+    // Build flat list with categories
+    for (const cat of this.categories) {
+      const channels = channelsByCategory.get(cat.id) || [];
+      if (channels.length === 0) continue;
+
+      this.flatItems.push({
+        type: 'category',
+        id: cat.id,
+        name: cat.name,
+        count: channels.length
+      });
+
+      for (const ch of channels) {
+        this.flatItems.push({
+          type: 'channel',
+          categoryId: cat.id,
+          ...ch
+        });
+      }
+    }
+
+    // Add uncategorized
+    const uncategorized = channelsByCategory.get('__uncategorized__') || [];
+    if (uncategorized.length > 0) {
+      this.flatItems.push({
+        type: 'category',
+        id: '__uncategorized__',
+        name: 'Uncategorized',
+        count: uncategorized.length
+      });
+      for (const ch of uncategorized) {
+        this.flatItems.push({
+          type: 'channel',
+          categoryId: '__uncategorized__',
+          ...ch
+        });
+      }
+    }
+  }
+
+  applyFilters() {
+    const hiddenCategories = JSON.parse(localStorage.getItem("hiddenCategories") || "[]");
+    const showFavoritesOnly = localStorage.getItem("showFavoritesOnly") === "true";
+    const favorites = JSON.parse(localStorage.getItem("favoriteChannels") || "[]");
+    const query = this.searchQuery.toLowerCase();
+
+    this.filteredItems = [];
+    let currentCategoryVisible = true;
+    let currentCategoryId = null;
+    let pendingCategory = null;
+
+    for (const item of this.flatItems) {
+      if (item.type === 'category') {
+        // Check if category is hidden by filter
+        if (hiddenCategories.includes(item.id)) {
+          currentCategoryVisible = false;
+          currentCategoryId = item.id;
+          pendingCategory = null;
+          continue;
+        }
+        currentCategoryVisible = true;
+        currentCategoryId = item.id;
+        pendingCategory = item;
+        continue;
+      }
+
+      // Channel item
+      if (!currentCategoryVisible) continue;
+      if (this.collapsedCategories.has(item.categoryId)) continue;
+
+      // Search filter
+      if (query && !item.name.toLowerCase().includes(query)) continue;
+
+      // Favorites filter
+      if (showFavoritesOnly && !favorites.includes(item.streamId)) continue;
+
+      // Add pending category header if we have a visible channel
+      if (pendingCategory) {
+        this.filteredItems.push(pendingCategory);
+        pendingCategory = null;
+      }
+
+      this.filteredItems.push(item);
+    }
+
+    this.updateWrapperHeight();
+    this.render();
+  }
+
+  updateWrapperHeight() {
+    let height = 0;
+    for (const item of this.filteredItems) {
+      height += item.type === 'category' ? this.headerHeight : this.itemHeight;
+    }
+    this.wrapper.style.height = `${height}px`;
+  }
+
+  getItemTop(index) {
+    let top = 0;
+    for (let i = 0; i < index; i++) {
+      top += this.filteredItems[i].type === 'category' ? this.headerHeight : this.itemHeight;
+    }
+    return top;
+  }
+
+  getVisibleRange() {
+    const scrollTop = this.scrollTop;
+    const viewportHeight = this.containerHeight || this.container.clientHeight;
+
+    // Find start index
+    let top = 0;
+    let startIndex = 0;
+    for (let i = 0; i < this.filteredItems.length; i++) {
+      const itemHeight = this.filteredItems[i].type === 'category' ? this.headerHeight : this.itemHeight;
+      if (top + itemHeight > scrollTop) {
+        startIndex = i;
+        break;
+      }
+      top += itemHeight;
+    }
+
+    // Find end index
+    let endIndex = startIndex;
+    let visibleHeight = 0;
+    for (let i = startIndex; i < this.filteredItems.length; i++) {
+      const itemHeight = this.filteredItems[i].type === 'category' ? this.headerHeight : this.itemHeight;
+      visibleHeight += itemHeight;
+      endIndex = i;
+      if (visibleHeight > viewportHeight) break;
+    }
+
+    // Add buffer
+    startIndex = Math.max(0, startIndex - this.bufferSize);
+    endIndex = Math.min(this.filteredItems.length - 1, endIndex + this.bufferSize);
+
+    return { startIndex, endIndex };
+  }
+
+  onScroll() {
+    this.scrollTop = this.container.scrollTop;
+    this.render();
+  }
+
+  render() {
+    if (this.filteredItems.length === 0) {
+      this.content.innerHTML = '<div class="empty-state"><p>No channels found</p></div>';
+      this.content.style.transform = 'translateY(0)';
+      return;
+    }
+
+    const { startIndex, endIndex } = this.getVisibleRange();
+    const offsetTop = this.getItemTop(startIndex);
+
+    const favorites = JSON.parse(localStorage.getItem("favoriteChannels") || "[]");
+    const fragment = document.createDocumentFragment();
+
+    for (let i = startIndex; i <= endIndex; i++) {
+      const item = this.filteredItems[i];
+      if (item.type === 'category') {
+        fragment.appendChild(this.renderCategory(item));
+      } else {
+        fragment.appendChild(this.renderChannel(item, favorites));
+      }
+    }
+
+    this.content.innerHTML = '';
+    this.content.style.transform = `translateY(${offsetTop}px)`;
+    this.content.appendChild(fragment);
+
+    // Process HTMX attributes on newly created elements
+    if (typeof htmx !== 'undefined') {
+      htmx.process(this.content);
+    }
+  }
+
+  renderCategory(item) {
+    const isCollapsed = this.collapsedCategories.has(item.id);
+    const div = document.createElement('div');
+    div.className = 'category-header';
+    div.style.height = `${this.headerHeight}px`;
+    div.dataset.categoryId = item.id;
+    div.innerHTML = `
+      <span class="category-name">${this.escapeHtml(item.name)}</span>
+      <span class="category-toggle" style="${isCollapsed ? 'transform: rotate(-90deg)' : ''}">&#9662;</span>
+    `;
+    div.addEventListener('click', () => this.toggleCategory(item.id));
+    return div;
+  }
+
+  renderChannel(item, favorites) {
+    const isActive = item.streamId === this.activeStreamId;
+    const isFavorite = favorites.includes(item.streamId);
+
+    const a = document.createElement('a');
+    a.href = `/play/${item.streamId}`;
+    a.className = 'channel-item' + (isActive ? ' active' : '') + (isFavorite ? ' is-favorite' : '');
+    a.dataset.streamId = item.streamId;
+    a.style.height = `${this.itemHeight}px`;
+
+    const iconHtml = item.iconUrl
+      ? `<img class="channel-icon" src="/api/image?url=${encodeURIComponent(item.iconUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      : '<div class="channel-icon-placeholder"></div>';
+
+    a.innerHTML = `
+      ${iconHtml}
+      <span class="channel-name">${this.escapeHtml(item.name)}</span>
+      <button class="favorite-btn" data-stream-id="${item.streamId}" title="Toggle favorite">
+        <svg class="heart-icon" viewBox="0 0 24 24" width="14" height="14">
+          <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>
+        </svg>
+      </button>
+    `;
+
+    // HTMX attributes for SPA-like navigation
+    a.setAttribute('hx-get', `/play/${item.streamId}`);
+    a.setAttribute('hx-target', '#player-container');
+    a.setAttribute('hx-push-url', 'true');
+
+    // Store reference to virtual scroller for the click handler
+    const self = this;
+    a.addEventListener('click', (e) => {
+      // Don't interfere with favorite button clicks
+      if (e.target.closest('.favorite-btn')) {
+        return;
+      }
+      
+      // Prevent default link navigation - let HTMX handle it
+      e.preventDefault();
+      self.setActive(item.streamId);
+      
+      // Trigger HTMX request manually
+      if (typeof htmx !== 'undefined') {
+        htmx.ajax('GET', `/play/${item.streamId}`, {
+          target: '#player-container',
+          swap: 'innerHTML'
+        }).then(() => {
+          // Update URL after successful load
+          history.pushState({}, '', `/play/${item.streamId}`);
+        });
+      }
+    });
+
+    return a;
+  }
+
+  toggleCategory(categoryId) {
+    if (this.collapsedCategories.has(categoryId)) {
+      this.collapsedCategories.delete(categoryId);
+    } else {
+      this.collapsedCategories.add(categoryId);
+    }
+    this.applyFilters();
+  }
+
+  setActive(streamId) {
+    this.activeStreamId = streamId;
+    this.render();
+  }
+
+  search(query) {
+    this.searchQuery = query;
+    this.applyFilters();
+  }
+
+  refresh() {
+    this.applyFilters();
+  }
+
+  scrollToActive() {
+    if (!this.activeStreamId) return;
+
+    // First, find the channel in the full list to get its category
+    const channel = this.flatItems.find(item => item.streamId === this.activeStreamId);
+    if (channel && channel.categoryId) {
+      // Expand the category if it's collapsed
+      if (this.collapsedCategories.has(channel.categoryId)) {
+        this.collapsedCategories.delete(channel.categoryId);
+        this.applyFilters();
+      }
+    }
+
+    // Now find in filtered items and scroll
+    const index = this.filteredItems.findIndex(item => item.streamId === this.activeStreamId);
+    if (index >= 0) {
+      const top = this.getItemTop(index);
+      this.container.scrollTo({ top, behavior: 'smooth' });
+    }
+  }
+
+  escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+}
+
+// Global virtual scroller instance
+let virtualChannelList = null;
+
 // Sidebar toggle
 function toggleSidebar() {
   const app = document.querySelector(".app");
   if (app) {
     app.classList.toggle("sidebar-hidden");
     localStorage.setItem("sidebarHidden", app.classList.contains("sidebar-hidden"));
+  }
+}
+
+// Check if we're on mobile
+function isMobile() {
+  return window.innerWidth <= 768;
+}
+
+// Close sidebar on mobile (used after channel selection)
+function closeSidebarOnMobile() {
+  if (isMobile()) {
+    const app = document.querySelector(".app");
+    if (app && !app.classList.contains("sidebar-hidden")) {
+      app.classList.add("sidebar-hidden");
+      localStorage.setItem("sidebarHidden", "true");
+    }
   }
 }
 
@@ -107,6 +516,13 @@ function toggleAllCategories(show) {
 }
 
 function applyCategoryFilters() {
+  // Use virtual scroller if available
+  if (virtualChannelList) {
+    virtualChannelList.refresh();
+    return;
+  }
+
+  // Fallback for non-virtual mode
   const hidden = JSON.parse(localStorage.getItem("hiddenCategories") || "[]");
   document.querySelectorAll(".category").forEach(cat => {
     const catId = cat.dataset?.categoryId;
@@ -194,14 +610,109 @@ function loadAccountInfo() {
     });
 }
 
+// Favorites management
+function getFavorites() {
+  return JSON.parse(localStorage.getItem("favoriteChannels") || "[]");
+}
+
+function isFavorite(streamId) {
+  return getFavorites().includes(streamId);
+}
+
+function toggleFavorite(streamId) {
+  let favorites = getFavorites();
+  const index = favorites.indexOf(streamId);
+  if (index > -1) {
+    favorites.splice(index, 1);
+  } else {
+    favorites.push(streamId);
+  }
+  localStorage.setItem("favoriteChannels", JSON.stringify(favorites));
+  applyFavoriteStates();
+  applyFavoritesFilter();
+}
+
+// Event delegation for favorite buttons
+document.addEventListener("click", function(e) {
+  const favoriteBtn = e.target.closest(".favorite-btn");
+  if (favoriteBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const streamId = favoriteBtn.dataset.streamId;
+    if (streamId) {
+      toggleFavorite(streamId);
+    }
+  }
+});
+
+function applyFavoriteStates() {
+  const favorites = getFavorites();
+  document.querySelectorAll(".channel-item").forEach(item => {
+    const streamId = item.dataset.streamId;
+    if (streamId && favorites.includes(streamId)) {
+      item.classList.add("is-favorite");
+    } else {
+      item.classList.remove("is-favorite");
+    }
+  });
+}
+
+function toggleFavoritesFilter() {
+  const isActive = localStorage.getItem("showFavoritesOnly") === "true";
+  localStorage.setItem("showFavoritesOnly", !isActive);
+  applyFavoritesFilter();
+  updateFavoritesButton();
+}
+
+function applyFavoritesFilter() {
+  // Use virtual scroller if available
+  if (virtualChannelList) {
+    virtualChannelList.refresh();
+    return;
+  }
+
+  // Fallback for non-virtual mode
+  const showFavoritesOnly = localStorage.getItem("showFavoritesOnly") === "true";
+  const favorites = getFavorites();
+
+  document.querySelectorAll(".channel-item").forEach(item => {
+    const streamId = item.dataset.streamId;
+    if (showFavoritesOnly && streamId && !favorites.includes(streamId)) {
+      item.style.display = "none";
+    } else {
+      item.style.display = "";
+    }
+  });
+
+  // Hide empty categories when filtering
+  document.querySelectorAll(".category").forEach(cat => {
+    const visibleChannels = cat.querySelectorAll(".channel-item:not([style*='display: none'])");
+    if (showFavoritesOnly && visibleChannels.length === 0) {
+      cat.classList.add("hidden-by-favorites");
+    } else {
+      cat.classList.remove("hidden-by-favorites");
+    }
+  });
+}
+
+function updateFavoritesButton() {
+  const btn = document.getElementById("favorites-btn");
+  if (btn) {
+    const isActive = localStorage.getItem("showFavoritesOnly") === "true";
+    btn.classList.toggle("active", isActive);
+  }
+}
+
 // Restore sidebar and category states on load
 (function() {
   document.addEventListener("DOMContentLoaded", function() {
+    const app = document.querySelector(".app");
+
+    // Restore sidebar state (only applies on desktop/landscape)
     if (localStorage.getItem("sidebarHidden") === "true") {
-      const app = document.querySelector(".app");
       if (app) app.classList.add("sidebar-hidden");
     }
-    
+
     // Restore category checkbox states
     const hidden = JSON.parse(localStorage.getItem("hiddenCategories") || "[]");
     document.querySelectorAll(".category-filter-item input[type='checkbox']").forEach(cb => {
@@ -210,6 +721,11 @@ function loadAccountInfo() {
       }
     });
     applyCategoryFilters();
+
+    // Restore favorites states
+    applyFavoriteStates();
+    applyFavoritesFilter();
+    updateFavoritesButton();
   });
 })();
 
@@ -318,15 +834,6 @@ function setActiveChannel(element) {
     el.classList.remove("active");
   });
   element.classList.add("active");
-  
-  // Scroll to put the active channel at the top of the list
-  const channelList = document.getElementById("channel-list");
-  if (channelList) {
-    const listRect = channelList.getBoundingClientRect();
-    const itemRect = element.getBoundingClientRect();
-    const scrollOffset = itemRect.top - listRect.top + channelList.scrollTop;
-    channelList.scrollTo({ top: scrollOffset, behavior: "smooth" });
-  }
 }
 
 // Highlight active channel by stream ID (called after player loads)
@@ -480,6 +987,13 @@ function initPlayer(videoElement, streamUrl) {
   perfStats.errors = 0;
   perfStats.recoveries = 0;
 
+  // Reset retry tracking
+  networkRetryCount = 0;
+  if (networkRetryTimeout) {
+    clearTimeout(networkRetryTimeout);
+    networkRetryTimeout = null;
+  }
+
   // Stop existing stats updates
   stopStatsUpdates();
 
@@ -574,6 +1088,9 @@ function onManifestParsed() {
 }
 
 function onFragLoaded(event, data) {
+  // Reset retry count on successful load
+  networkRetryCount = 0;
+
   if (data.frag && data.frag.stats) {
     const loadTime = data.frag.stats.loading.end - data.frag.stats.loading.start;
     perfStats.segmentLoadTimes.push(loadTime);
@@ -589,16 +1106,44 @@ function onHlsError(event, data) {
   if (data.fatal) {
     switch (data.type) {
       case Hls.ErrorTypes.NETWORK_ERROR:
+        // Check if we've exceeded max retries
+        if (networkRetryCount >= MAX_NETWORK_RETRIES) {
+          console.warn("Max network retries exceeded, stopping playback");
+          hlsInstance.destroy();
+          hlsInstance = null;
+          notifyStreamStopped();
+          return;
+        }
+
+        // Cancel any pending retry
+        if (networkRetryTimeout) {
+          clearTimeout(networkRetryTimeout);
+        }
+
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        const delay = INITIAL_RETRY_DELAY * Math.pow(2, networkRetryCount);
+        networkRetryCount++;
         perfStats.recoveries++;
-        hlsInstance.startLoad();
+
+        console.log(`Network error, retrying in ${delay}ms (attempt ${networkRetryCount}/${MAX_NETWORK_RETRIES})`);
+
+        networkRetryTimeout = setTimeout(() => {
+          if (hlsInstance) {
+            hlsInstance.startLoad();
+          }
+        }, delay);
         break;
+
       case Hls.ErrorTypes.MEDIA_ERROR:
         perfStats.recoveries++;
         hlsInstance.recoverMediaError();
         break;
+
       default:
+        // Unrecoverable error
         hlsInstance.destroy();
         hlsInstance = null;
+        notifyStreamStopped();
         break;
     }
   }
@@ -627,28 +1172,41 @@ document.addEventListener("htmx:afterSwap", function (event) {
       }
     }
   }
+  
+  // Reapply favorite states after channel list updates (e.g., search)
+  const channelList = document.getElementById("channel-list");
+  if (channelList && channelList.contains(event.detail.target)) {
+    applyFavoriteStates();
+    applyFavoritesFilter();
+  }
 });
+
+// Notify server that stream stopped (allows health checks to resume)
+function notifyStreamStopped() {
+  navigator.sendBeacon("/api/stream/stopped", "");
+}
 
 // Cleanup on page unload
 window.addEventListener("beforeunload", function () {
   if (hlsInstance) {
     hlsInstance.destroy();
     hlsInstance = null;
+    notifyStreamStopped();
   }
   stopStatsUpdates();
 });
 
 // Keyboard shortcuts
 document.addEventListener("keydown", function (e) {
-  const video = document.getElementById("video-player");
-  if (!video) return;
-
   // Ignore if typing in an input
   if (e.target.tagName === "INPUT") return;
+
+  const video = document.getElementById("video-player");
 
   switch (e.key) {
     case " ":
     case "k":
+      if (!video) return;
       e.preventDefault();
       if (video.paused) {
         video.play();
@@ -657,6 +1215,7 @@ document.addEventListener("keydown", function (e) {
       }
       break;
     case "f":
+      if (!video) return;
       e.preventDefault();
       if (document.fullscreenElement) {
         document.exitFullscreen();
@@ -665,14 +1224,17 @@ document.addEventListener("keydown", function (e) {
       }
       break;
     case "m":
+      if (!video) return;
       e.preventDefault();
       video.muted = !video.muted;
       break;
     case "ArrowUp":
+      if (!video) return;
       e.preventDefault();
       video.volume = Math.min(1, video.volume + 0.1);
       break;
     case "ArrowDown":
+      if (!video) return;
       e.preventDefault();
       video.volume = Math.max(0, video.volume - 0.1);
       break;
