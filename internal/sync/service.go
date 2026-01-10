@@ -125,7 +125,7 @@ func (s *Service) Sync(ctx context.Context) error {
 }
 
 func (s *Service) updateStatus(status, errMsg string) {
-	_, err := s.db.Exec(`
+	_, err := s.db.WriteExec(`
 		UPDATE sync_status 
 		SET last_sync = CURRENT_TIMESTAMP, status = ?, error = ?
 		WHERE id = 1

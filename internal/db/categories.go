@@ -13,7 +13,7 @@ type Category struct {
 }
 
 func (d *DB) UpsertCategory(cat *Category) error {
-	_, err := d.Exec(`
+	_, err := d.WriteExec(`
 		INSERT INTO categories (category_id, name, parent_id)
 		VALUES (?, ?, ?)
 		ON CONFLICT(category_id) DO UPDATE SET
@@ -59,6 +59,6 @@ func (d *DB) GetCategoryByID(categoryID string) (*Category, error) {
 }
 
 func (d *DB) DeleteAllCategories() error {
-	_, err := d.Exec("DELETE FROM categories")
+	_, err := d.WriteExec("DELETE FROM categories")
 	return err
 }

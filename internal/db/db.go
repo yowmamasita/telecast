@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
 
 type DB struct {
 	*sql.DB
+	writeMu sync.Mutex // Serialize write operations to avoid SQLITE_BUSY
 }
 
 func New(path string) (*DB, error) {
@@ -34,6 +36,14 @@ func New(path string) (*DB, error) {
 	if _, err := db.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		return nil, fmt.Errorf("failed to enable foreign keys: %w", err)
 	}
+
+	// Set busy timeout to wait for locks instead of failing immediately (30 seconds)
+	if _, err := db.Exec("PRAGMA busy_timeout=30000"); err != nil {
+		return nil, fmt.Errorf("failed to set busy timeout: %w", err)
+	}
+
+	// Limit connection pool to 1 to avoid concurrent writes on the same connection
+	db.SetMaxOpenConns(1)
 
 	d := &DB{DB: db}
 	if err := d.migrate(); err != nil {
@@ -96,4 +106,11 @@ func (d *DB) migrate() error {
 
 func (d *DB) Close() error {
 	return d.DB.Close()
+}
+
+// WriteExec executes a write query with mutex protection
+func (d *DB) WriteExec(query string, args ...interface{}) (sql.Result, error) {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	return d.Exec(query, args...)
 }

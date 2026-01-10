@@ -16,7 +16,7 @@ type Channel struct {
 }
 
 func (d *DB) UpsertChannel(ch *Channel) error {
-	_, err := d.Exec(`
+	_, err := d.WriteExec(`
 		INSERT INTO channels (stream_id, name, category_id, icon_url, epg_channel_id, num, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(stream_id) DO UPDATE SET
@@ -119,6 +119,6 @@ func (d *DB) GetChannelCount() (int, error) {
 }
 
 func (d *DB) DeleteAllChannels() error {
-	_, err := d.Exec("DELETE FROM channels")
+	_, err := d.WriteExec("DELETE FROM channels")
 	return err
 }
