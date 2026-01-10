@@ -23,9 +23,13 @@ type Proxy struct {
 	client    *http.Client
 	userAgent string
 
-	// Cache for segments and manifests
-	cache   map[string]*cacheEntry
-	cacheMu sync.RWMutex
+	// Cache for segments and manifests (cleared on channel change)
+	streamCache   map[string]*cacheEntry
+	streamCacheMu sync.RWMutex
+
+	// Separate cache for images (persists across channel changes)
+	imageCache   map[string]*cacheEntry
+	imageCacheMu sync.RWMutex
 
 	// Semaphore to limit concurrent connections to IPTV server
 	connSem chan struct{}
@@ -54,9 +58,10 @@ func New() *Proxy {
 				return http.ErrUseLastResponse
 			},
 		},
-		userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-		cache:     make(map[string]*cacheEntry),
-		connSem:   make(chan struct{}, 1), // Allow only 1 concurrent connection
+		userAgent:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+		streamCache: make(map[string]*cacheEntry),
+		imageCache:  make(map[string]*cacheEntry),
+		connSem:     make(chan struct{}, 1), // Allow only 1 concurrent connection
 	}
 
 	// Start cache cleanup goroutine
@@ -65,39 +70,74 @@ func New() *Proxy {
 	return p
 }
 
-// cleanupCache removes expired entries periodically
+// cleanupCache removes expired entries periodically from both caches
 func (p *Proxy) cleanupCache() {
 	ticker := time.NewTicker(30 * time.Second)
 	for range ticker.C {
-		p.cacheMu.Lock()
 		now := time.Now()
-		for key, entry := range p.cache {
+
+		// Clean stream cache
+		p.streamCacheMu.Lock()
+		for key, entry := range p.streamCache {
 			if now.After(entry.expiry) {
-				delete(p.cache, key)
+				delete(p.streamCache, key)
 			}
 		}
-		p.cacheMu.Unlock()
+		p.streamCacheMu.Unlock()
+
+		// Clean image cache
+		p.imageCacheMu.Lock()
+		for key, entry := range p.imageCache {
+			if now.After(entry.expiry) {
+				delete(p.imageCache, key)
+			}
+		}
+		p.imageCacheMu.Unlock()
 	}
 }
 
-// getFromCache returns cached content if available and not expired
-func (p *Proxy) getFromCache(key string) (*cacheEntry, bool) {
-	p.cacheMu.RLock()
-	defer p.cacheMu.RUnlock()
+// getFromStreamCache returns cached stream content if available and not expired
+func (p *Proxy) getFromStreamCache(key string) (*cacheEntry, bool) {
+	p.streamCacheMu.RLock()
+	defer p.streamCacheMu.RUnlock()
 
-	entry, ok := p.cache[key]
+	entry, ok := p.streamCache[key]
 	if !ok || time.Now().After(entry.expiry) {
 		return nil, false
 	}
 	return entry, true
 }
 
-// setCache stores content in cache
-func (p *Proxy) setCache(key string, data []byte, contentType string, ttl time.Duration) {
-	p.cacheMu.Lock()
-	defer p.cacheMu.Unlock()
+// setStreamCache stores stream content in cache
+func (p *Proxy) setStreamCache(key string, data []byte, contentType string, ttl time.Duration) {
+	p.streamCacheMu.Lock()
+	defer p.streamCacheMu.Unlock()
 
-	p.cache[key] = &cacheEntry{
+	p.streamCache[key] = &cacheEntry{
+		data:        data,
+		contentType: contentType,
+		expiry:      time.Now().Add(ttl),
+	}
+}
+
+// getFromImageCache returns cached image content if available and not expired
+func (p *Proxy) getFromImageCache(key string) (*cacheEntry, bool) {
+	p.imageCacheMu.RLock()
+	defer p.imageCacheMu.RUnlock()
+
+	entry, ok := p.imageCache[key]
+	if !ok || time.Now().After(entry.expiry) {
+		return nil, false
+	}
+	return entry, true
+}
+
+// setImageCache stores image content in cache
+func (p *Proxy) setImageCache(key string, data []byte, contentType string, ttl time.Duration) {
+	p.imageCacheMu.Lock()
+	defer p.imageCacheMu.Unlock()
+
+	p.imageCache[key] = &cacheEntry{
 		data:        data,
 		contentType: contentType,
 		expiry:      time.Now().Add(ttl),
@@ -132,7 +172,7 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check cache first for segments
-	if entry, ok := p.getFromCache(streamURL); ok {
+	if entry, ok := p.getFromStreamCache(streamURL); ok {
 		w.Header().Set("Content-Type", entry.contentType)
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("X-Cache", "HIT")
@@ -219,7 +259,7 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 			if ct == "" {
 				ct = "video/mp2t"
 			}
-			p.setCache(streamURL, data, ct, 60*time.Second)
+			p.setStreamCache(streamURL, data, ct, 60*time.Second)
 
 			w.Header().Set("Content-Type", ct)
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
@@ -276,7 +316,7 @@ func (p *Proxy) handleHLSManifest(w http.ResponseWriter, resp *http.Response, or
 
 	// Cache manifest for 2 seconds (HLS typically updates every few seconds)
 	manifestData := output.Bytes()
-	p.setCache(originalURL, manifestData, "application/vnd.apple.mpegurl", 2*time.Second)
+	p.setStreamCache(originalURL, manifestData, "application/vnd.apple.mpegurl", 2*time.Second)
 
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -332,8 +372,8 @@ func (p *Proxy) HandleImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check cache first
-	if entry, ok := p.getFromCache(imageURL); ok {
+	// Check image cache first
+	if entry, ok := p.getFromImageCache(imageURL); ok {
 		w.Header().Set("Content-Type", entry.contentType)
 		w.Header().Set("Cache-Control", "public, max-age=86400")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -370,7 +410,7 @@ func (p *Proxy) HandleImage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cache images for 24 hours
-	p.setCache(imageURL, data, contentType, 24*time.Hour)
+	p.setImageCache(imageURL, data, contentType, 24*time.Hour)
 
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
@@ -380,9 +420,9 @@ func (p *Proxy) HandleImage(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// ClearCache clears all cached content (useful when changing channels)
+// ClearCache clears stream cache only (images are preserved)
 func (p *Proxy) ClearCache() {
-	p.cacheMu.Lock()
-	defer p.cacheMu.Unlock()
-	p.cache = make(map[string]*cacheEntry)
+	p.streamCacheMu.Lock()
+	defer p.streamCacheMu.Unlock()
+	p.streamCache = make(map[string]*cacheEntry)
 }
