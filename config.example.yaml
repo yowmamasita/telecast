@@ -1,0 +1,14 @@
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+iptv:
+  url: "http://forget84107.cdn-akm.me"
+  username: "dc7997f548"
+  password: "57a7c73aad"
+
+sync:
+  interval: "15m"
+
+database:
+  path: "./data/telecast.db"

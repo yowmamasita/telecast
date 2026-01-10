@@ -1,0 +1,19 @@
+package templates
+
+templ Base(title string) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="UTF-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+			<title>{ title } - Telecast</title>
+			<link rel="stylesheet" href="/static/css/style.css"/>
+			<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+			<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.7"></script>
+			<script src="/static/js/player.js"></script>
+		</head>
+		<body hx-history="false">
+			{ children... }
+		</body>
+	</html>
+}

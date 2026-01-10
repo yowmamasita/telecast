@@ -1,0 +1,1 @@
+deploy to remote machine ssh ben@zen

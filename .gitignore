@@ -1,0 +1,44 @@
+# Binaries
+telecast
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+
+# Go workspace
+go.work
+go.work.sum
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Generated templ files
+*_templ.go
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Config with secrets
+config.yaml
+!config.example.yaml
+
+# OS
+.DS_Store
+Thumbs.db
