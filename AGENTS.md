@@ -1,1 +1,1 @@
-deploy to remote machine ssh ben@zen
+deploy to remote machine ssh ben@zen it runs on port 3333 check telecast.service
