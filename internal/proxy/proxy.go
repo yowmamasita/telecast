@@ -40,11 +40,19 @@ type Proxy struct {
 }
 
 func New() *Proxy {
-	// Custom transport with connection reuse optimized for single connection
+	return NewWithMaxConnections(1)
+}
+
+func NewWithMaxConnections(maxConnections int) *Proxy {
+	if maxConnections < 1 {
+		maxConnections = 1
+	}
+
+	// Custom transport with connection reuse optimized for the configured number of connections
 	transport := &http.Transport{
-		MaxIdleConns:        1,
-		MaxIdleConnsPerHost: 1,
-		MaxConnsPerHost:     1,
+		MaxIdleConns:        maxConnections,
+		MaxIdleConnsPerHost: maxConnections,
+		MaxConnsPerHost:     maxConnections,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   false, // Stick to HTTP/1.1 for better compatibility
@@ -61,7 +69,7 @@ func New() *Proxy {
 		userAgent:   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 		streamCache: make(map[string]*cacheEntry),
 		imageCache:  make(map[string]*cacheEntry),
-		connSem:     make(chan struct{}, 1), // Allow only 1 concurrent connection
+		connSem:     make(chan struct{}, maxConnections), // Allow configured number of concurrent connections
 	}
 
 	// Start cache cleanup goroutine

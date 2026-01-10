@@ -5,28 +5,28 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/bensarmiento/telecast/internal/accounts"
 	"github.com/bensarmiento/telecast/internal/db"
 	"github.com/bensarmiento/telecast/internal/proxy"
 	"github.com/bensarmiento/telecast/internal/sync"
-	"github.com/bensarmiento/telecast/internal/xtream"
 	"github.com/bensarmiento/telecast/templates"
 )
 
 type Handlers struct {
-	db          *db.DB
-	client      *xtream.Client
-	proxy       *proxy.Proxy
-	syncService *sync.Service
-	logger      *slog.Logger
+	db             *db.DB
+	accountManager *accounts.Manager
+	proxy          *proxy.Proxy
+	syncService    *sync.Service
+	logger         *slog.Logger
 }
 
-func New(database *db.DB, client *xtream.Client, proxyService *proxy.Proxy, syncService *sync.Service, logger *slog.Logger) *Handlers {
+func New(database *db.DB, accountManager *accounts.Manager, proxyService *proxy.Proxy, syncService *sync.Service, logger *slog.Logger) *Handlers {
 	return &Handlers{
-		db:          database,
-		client:      client,
-		proxy:       proxyService,
-		syncService: syncService,
-		logger:      logger,
+		db:             database,
+		accountManager: accountManager,
+		proxy:          proxyService,
+		syncService:    syncService,
+		logger:         logger,
 	}
 }
 
@@ -79,8 +79,14 @@ func (h *Handlers) Play(w http.ResponseWriter, r *http.Request) {
 	// Clear cache when changing channels to free up connection
 	h.proxy.ClearCache()
 
-	// Build the proxied stream URL
-	originalURL := h.client.BuildStreamURLString(streamID, "m3u8")
+	// Build the proxied stream URL using the best available account
+	originalURL, acc, err := h.accountManager.BuildStreamURL(streamID, "m3u8")
+	if err != nil {
+		h.logger.Error("failed to get stream URL", "error", err)
+		http.Error(w, "No available IPTV accounts", http.StatusServiceUnavailable)
+		return
+	}
+	h.accountManager.SetCurrentStreamAccount(acc)
 	streamURL := "/api/stream?url=" + originalURL
 
 	// Check if this is an HTMX request
@@ -192,17 +198,45 @@ func (h *Handlers) APISyncStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// APIAccountInfo returns IPTV account information
+// APIAccountInfo returns IPTV account information for all accounts
 func (h *Handlers) APIAccountInfo(w http.ResponseWriter, r *http.Request) {
-	auth, err := h.client.Authenticate()
-	if err != nil {
-		h.jsonError(w, "Failed to get account info", http.StatusInternalServerError)
-		return
+	allAccounts := h.accountManager.GetAllAccounts()
+
+	type accountInfo struct {
+		Name       string `json:"name"`
+		Username   string `json:"username"`
+		URL        string `json:"url"`
+		MaxConn    int    `json:"max_connections"`
+		ActiveConn int    `json:"active_connections"`
+		LocalConn  int    `json:"local_connections"`
+		Available  bool   `json:"available"`
+		IsCurrent  bool   `json:"is_current"`
+		Error      string `json:"error,omitempty"`
+	}
+
+	accounts := make([]accountInfo, 0, len(allAccounts))
+	currentAcc := h.accountManager.GetCurrentStreamAccount()
+
+	for _, acc := range allAccounts {
+		info := accountInfo{
+			Name:       acc.Account.Name,
+			Username:   acc.Account.Username,
+			URL:        acc.Account.URL,
+			MaxConn:    acc.MaxConn,
+			ActiveConn: acc.ActiveConn,
+			LocalConn:  acc.LocalConn,
+			Available:  acc.Available,
+			IsCurrent:  currentAcc != nil && acc.Account.Name == currentAcc.Account.Name,
+		}
+		if acc.LastError != nil {
+			info.Error = acc.LastError.Error()
+		}
+		accounts = append(accounts, info)
 	}
 
 	h.jsonResponse(w, map[string]interface{}{
-		"user_info":   auth.UserInfo,
-		"server_info": auth.ServerInfo,
+		"accounts":       accounts,
+		"total_accounts": len(accounts),
 	})
 }
 

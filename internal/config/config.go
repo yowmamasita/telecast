@@ -15,6 +15,14 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 }
 
+// Account represents a single IPTV account with credentials
+type Account struct {
+	Name     string `yaml:"name"`     // Optional friendly name for the account
+	URL      string `yaml:"url"`      // IPTV server URL
+	Username string `yaml:"username"` // Account username
+	Password string `yaml:"password"` // Account password
+}
+
 type ServerConfig struct {
 	Host string `yaml:"host"`
 	Port int    `yaml:"port"`
@@ -25,9 +33,33 @@ func (s ServerConfig) Addr() string {
 }
 
 type IPTVConfig struct {
+	// Single account config (legacy, still supported)
 	URL      string `yaml:"url"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+
+	// Multiple accounts config (takes precedence if present)
+	Accounts []Account `yaml:"accounts"`
+}
+
+// GetAccounts returns all configured accounts.
+// If accounts array is defined, use that. Otherwise, create a single account from legacy config.
+func (c *IPTVConfig) GetAccounts() []Account {
+	if len(c.Accounts) > 0 {
+		return c.Accounts
+	}
+	// Fallback to single account for backward compatibility
+	if c.URL != "" && c.Username != "" && c.Password != "" {
+		return []Account{
+			{
+				Name:     "default",
+				URL:      c.URL,
+				Username: c.Username,
+				Password: c.Password,
+			},
+		}
+	}
+	return nil
 }
 
 type SyncConfig struct {

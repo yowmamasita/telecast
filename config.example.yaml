@@ -3,9 +3,22 @@ server:
   port: 8080
 
 iptv:
-  url: "http://forget84107.cdn-akm.me"
-  username: "dc7997f548"
-  password: "57a7c73aad"
+  # Option 1: Single account (legacy format, still supported)
+  # url: "http://your-iptv-server.com"
+  # username: "your_username"
+  # password: "your_password"
+
+  # Option 2: Multiple accounts with load balancing
+  # Accounts are selected based on available connection capacity (max_connections - active_connections)
+  accounts:
+    - name: "primary"
+      url: "http://your-iptv-server.com"
+      username: "account1_username"
+      password: "account1_password"
+    - name: "secondary"
+      url: "http://your-iptv-server.com"
+      username: "account2_username"
+      password: "account2_password"
 
 sync:
   interval: "15m"
