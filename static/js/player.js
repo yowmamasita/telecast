@@ -737,7 +737,7 @@ function togglePlay() {
   if (!video) return;
   
   if (video.paused) {
-    video.play();
+    video.play().catch(() => {}); // Ignore abort errors
   } else {
     video.pause();
   }
@@ -766,6 +766,94 @@ function toggleFullscreen() {
     document.exitFullscreen();
   } else {
     video.requestFullscreen();
+  }
+}
+
+// Picture-in-Picture
+function togglePiP() {
+  const video = document.getElementById("video-player");
+  if (!video) return;
+
+  // Check if PiP is supported
+  if (!document.pictureInPictureEnabled) {
+    console.warn("Picture-in-Picture is not supported in this browser");
+    return;
+  }
+
+  // Check if video is allowed to enter PiP
+  if (video.disablePictureInPicture) {
+    console.warn("PiP is disabled for this video");
+    return;
+  }
+
+  if (document.pictureInPictureElement) {
+    document.exitPictureInPicture().catch(err => {
+      console.error("Error exiting PiP:", err);
+    });
+  } else {
+    // Ensure video has metadata loaded before entering PiP
+    if (video.readyState < 1) {
+      console.warn("Video not ready for PiP yet, waiting for metadata...");
+      video.addEventListener("loadedmetadata", function onMeta() {
+        video.removeEventListener("loadedmetadata", onMeta);
+        video.requestPictureInPicture().catch(err => {
+          console.error("Error entering PiP:", err);
+        });
+      });
+      return;
+    }
+    
+    video.requestPictureInPicture().catch(err => {
+      console.error("Error entering PiP:", err);
+    });
+  }
+}
+
+// Update PiP button state when PiP mode changes
+document.addEventListener("DOMContentLoaded", function() {
+  const video = document.getElementById("video-player");
+  if (video) {
+    video.addEventListener("enterpictureinpicture", updatePiPIcon);
+    video.addEventListener("leavepictureinpicture", updatePiPIcon);
+  }
+});
+
+// Auto PiP when switching tabs
+let autoPiPEnabled = localStorage.getItem("autoPiP") !== "false"; // Default enabled
+
+document.addEventListener("visibilitychange", function() {
+  if (!autoPiPEnabled) return;
+  if (!document.pictureInPictureEnabled) return;
+  
+  const video = document.getElementById("video-player");
+  if (!video) return;
+  
+  if (document.hidden) {
+    // Tab is hidden - enter PiP if video is playing
+    if (!video.paused && !document.pictureInPictureElement && video.readyState >= 1) {
+      video.requestPictureInPicture().catch(() => {});
+    }
+  } else {
+    // Tab is visible - exit PiP
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture().catch(() => {});
+    }
+  }
+});
+
+function updatePiPIcon() {
+  const btn = document.getElementById("pip-btn");
+  const icon = document.getElementById("pip-icon");
+  if (!btn || !icon) return;
+
+  if (document.pictureInPictureElement) {
+    btn.classList.add("active");
+    // Exit PiP icon
+    icon.innerHTML = '<path d="M21 3H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14zM9 9h6v6H9z"/>';
+  } else {
+    btn.classList.remove("active");
+    // Enter PiP icon
+    icon.innerHTML = '<path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H3V5h18v14z"/>';
   }
 }
 
@@ -1015,15 +1103,20 @@ function initPlayer(videoElement, streamUrl) {
   videoElement.onpause = updatePlayIcon;
   videoElement.onclick = togglePlay;
   videoElement.ondblclick = toggleFullscreen;
+  
+  // Set up PiP event listeners on the new video element
+  videoElement.addEventListener("enterpictureinpicture", updatePiPIcon);
+  videoElement.addEventListener("leavepictureinpicture", updatePiPIcon);
 
   // Check if HLS.js is supported
   if (Hls.isSupported()) {
-    // Reuse existing HLS instance for faster switching
+    // Destroy existing HLS instance to ensure clean state with new video element
     if (hlsInstance) {
-      hlsInstance.stopLoad();
-      hlsInstance.detachMedia();
-    } else {
-      hlsInstance = new Hls({
+      hlsInstance.destroy();
+      hlsInstance = null;
+    }
+    
+    hlsInstance = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
         // Smaller buffers for faster channel switching
@@ -1048,13 +1141,12 @@ function initPlayer(videoElement, streamUrl) {
         levelLoadingTimeOut: 5000,
         // Start loading immediately
         startFragPrefetch: true,
-      });
-      
-      // Set up event handlers once
-      hlsInstance.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
-      hlsInstance.on(Hls.Events.FRAG_LOADED, onFragLoaded);
-      hlsInstance.on(Hls.Events.ERROR, onHlsError);
-    }
+    });
+    
+    // Set up event handlers
+    hlsInstance.on(Hls.Events.MANIFEST_PARSED, onManifestParsed);
+    hlsInstance.on(Hls.Events.FRAG_LOADED, onFragLoaded);
+    hlsInstance.on(Hls.Events.ERROR, onHlsError);
 
     hlsInstance.loadSource(streamUrl);
     hlsInstance.attachMedia(videoElement);
@@ -1209,7 +1301,7 @@ document.addEventListener("keydown", function (e) {
       if (!video) return;
       e.preventDefault();
       if (video.paused) {
-        video.play();
+        video.play().catch(() => {}); // Ignore abort errors
       } else {
         video.pause();
       }
@@ -1245,6 +1337,11 @@ document.addEventListener("keydown", function (e) {
     case "i":
       e.preventDefault();
       toggleSecretMenu();
+      break;
+    case "p":
+      if (!video) return;
+      e.preventDefault();
+      togglePiP();
       break;
   }
 });

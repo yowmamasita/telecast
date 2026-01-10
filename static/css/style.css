@@ -757,6 +757,10 @@ html, body {
   opacity: 0.5;
 }
 
+.control-btn.active {
+  color: var(--accent);
+}
+
 .control-divider {
   width: 1px;
   height: 20px;
