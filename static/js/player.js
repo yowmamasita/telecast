@@ -921,6 +921,7 @@ document.addEventListener("DOMContentLoaded", function() {
 });
 
 let lastInitTime = 0; // Track last initPlayer call time
+let lastInitUrl = ''; // Track last stream URL to prevent duplicates
 
 function updatePiPIcon() {
   const inPip = !!document.pictureInPictureElement || !!documentPipWindow;
@@ -1152,10 +1153,13 @@ async function initPlayer(videoElement, streamUrl) {
   if (!videoElement || !streamUrl) return;
 
   // Debounce rapid initPlayer calls (ignore if called within 500ms)
-  if (now - lastInitTime < 500) {
+  // Also prevent re-init with the same URL
+  if (now - lastInitTime < 500 || (lastInitUrl === streamUrl && hlsInstance)) {
+    console.log('[Player] Skipping duplicate init for:', streamUrl);
     return;
   }
   lastInitTime = now;
+  lastInitUrl = streamUrl;
 
   // Exit PIP if active before switching to prevent GPU context conflicts
   if (documentPipWindow) {
@@ -1201,9 +1205,26 @@ async function initPlayer(videoElement, streamUrl) {
 
   // Update play icon on state changes (use named functions to avoid duplicates)
   videoElement.onplay = updatePlayIcon;
-  videoElement.onpause = updatePlayIcon;
+  videoElement.onpause = function() {
+    updatePlayIcon();
+    // Debug: log why video paused
+    const buffered = videoElement.buffered;
+    const bufferHealth = buffered.length > 0 ? (buffered.end(buffered.length - 1) - videoElement.currentTime).toFixed(1) : 0;
+    console.warn('[Player] Video paused - buffer:', bufferHealth + 's', 'readyState:', videoElement.readyState, 'networkState:', videoElement.networkState, 'error:', videoElement.error);
+  };
   videoElement.onclick = togglePlay;
   videoElement.ondblclick = toggleFullscreen;
+
+  // Debug: catch stall/waiting events
+  videoElement.onstalled = function() {
+    console.warn('[Player] Video stalled');
+  };
+  videoElement.onwaiting = function() {
+    console.warn('[Player] Video waiting for data');
+  };
+  videoElement.onerror = function() {
+    console.error('[Player] Video error:', videoElement.error);
+  };
   
   // Remove any existing PiP listeners before adding new ones to prevent accumulation
   videoElement.removeEventListener("enterpictureinpicture", updatePiPIcon);
@@ -1349,27 +1370,22 @@ function onHlsError(event, data) {
 }
 
 // Handle HTMX content swaps - reinitialize player
+// Note: The inline PlayerScript also calls initPlayer, but the debounce will prevent duplicates
 document.addEventListener("htmx:afterSwap", function (event) {
   const playerContainer = document.getElementById("player-container");
   if (playerContainer && playerContainer.contains(event.detail.target)) {
+    // The inline PlayerScript in the swapped content will handle initialization
+    // We only need to handle volume restoration here
     const video = document.getElementById("video-player");
-    const player = document.querySelector(".player");
-    if (video && player) {
-      const streamUrl = player.dataset.streamUrl;
-      if (streamUrl) {
-        // User clicked a channel, so we have interaction - can unmute
-        // Restore volume/mute from localStorage
-        const savedVol = parseInt(localStorage.getItem("volume")) || 100;
-        const wasMuted = localStorage.getItem("muted") === "true";
-        const slider = document.getElementById("volume-slider");
-        if (slider) slider.value = wasMuted ? 0 : savedVol;
-        
-        // Remove muted attribute since user interacted
-        video.removeAttribute("muted");
-        
-        initPlayer(video, streamUrl);
-      }
+    const slider = document.getElementById("volume-slider");
+    if (video && slider) {
+      const savedVol = parseInt(localStorage.getItem("volume")) || 100;
+      const wasMuted = localStorage.getItem("muted") === "true";
+      slider.value = wasMuted ? 0 : savedVol;
+      video.removeAttribute("muted");
     }
+    // Close sidebar on mobile after channel selection
+    closeSidebarOnMobile();
   }
   
   // Reapply favorite states after channel list updates (e.g., search)

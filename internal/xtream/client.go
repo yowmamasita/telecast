@@ -22,7 +22,7 @@ func NewClient(baseURL, username, password string) *Client {
 		username: username,
 		password: password,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 120 * time.Second,
 		},
 	}
 }

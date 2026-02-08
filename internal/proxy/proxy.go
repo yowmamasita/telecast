@@ -48,11 +48,12 @@ func NewWithMaxConnections(maxConnections int) *Proxy {
 		maxConnections = 1
 	}
 
-	// Custom transport with connection reuse optimized for the configured number of connections
+	// Custom transport with connection reuse
+	// Use higher limits for CDN/segment servers which need concurrent fetches
 	transport := &http.Transport{
-		MaxIdleConns:        maxConnections,
-		MaxIdleConnsPerHost: maxConnections,
-		MaxConnsPerHost:     maxConnections,
+		MaxIdleConns:        100,
+		MaxIdleConnsPerHost: 10,
+		MaxConnsPerHost:     10,
 		IdleConnTimeout:     90 * time.Second,
 		DisableCompression:  false,
 		ForceAttemptHTTP2:   false, // Stick to HTTP/1.1 for better compatibility
@@ -164,11 +165,13 @@ func (p *Proxy) releaseConnection() {
 
 // isIPTVServer checks if the URL is to the IPTV server (needs connection limiting)
 func (p *Proxy) isIPTVServer(urlStr string) bool {
-	// Limit connections only to the main IPTV server, not CDN/segment servers
+	// Limit all IPTV-related connections including CDN segment servers
+	// Provider tracks connections across all their infrastructure
 	return strings.Contains(urlStr, "cdn-akm.me") ||
 		strings.Contains(urlStr, "/live/") ||
 		strings.Contains(urlStr, "/movie/") ||
-		strings.Contains(urlStr, "/series/")
+		strings.Contains(urlStr, "/series/") ||
+		strings.Contains(urlStr, "/hls/")
 }
 
 // HandleStream proxies a stream request, rewriting HLS manifests
@@ -222,18 +225,59 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Upstream error: %v", err), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
 
-	// Handle redirects
-	if resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound ||
+	// Follow redirects internally instead of passing to client
+	// This prevents HLS.js from making duplicate requests
+	redirectCount := 0
+	for resp.StatusCode == http.StatusMovedPermanently || resp.StatusCode == http.StatusFound ||
 		resp.StatusCode == http.StatusSeeOther || resp.StatusCode == http.StatusTemporaryRedirect {
 		location := resp.Header.Get("Location")
-		if location != "" {
-			newURL := fmt.Sprintf("/api/stream?url=%s", url.QueryEscape(location))
-			http.Redirect(w, r, newURL, resp.StatusCode)
+		if location == "" {
+			break
+		}
+		redirectCount++
+		if redirectCount > 5 {
+			http.Error(w, "Too many redirects", http.StatusBadGateway)
+			return
+		}
+
+		// Resolve relative URLs
+		if !strings.HasPrefix(location, "http://") && !strings.HasPrefix(location, "https://") {
+			baseURL, _ := url.Parse(streamURL)
+			if baseURL != nil {
+				refURL, _ := url.Parse(location)
+				if refURL != nil {
+					location = baseURL.ResolveReference(refURL).String()
+				}
+			}
+		}
+
+		resp.Body.Close()
+		streamURL = location
+
+		req, err = http.NewRequestWithContext(r.Context(), "GET", streamURL, nil)
+		if err != nil {
+			http.Error(w, "Invalid redirect URL", http.StatusBadGateway)
+			return
+		}
+		req.Header.Set("User-Agent", p.userAgent)
+		req.Header.Set("Connection", "keep-alive")
+		parsedURL, _ = url.Parse(streamURL)
+		if parsedURL != nil {
+			req.Header.Set("Origin", fmt.Sprintf("%s://%s", parsedURL.Scheme, parsedURL.Host))
+			req.Header.Set("Referer", fmt.Sprintf("%s://%s/", parsedURL.Scheme, parsedURL.Host))
+		}
+		if rangeHeader := r.Header.Get("Range"); rangeHeader != "" {
+			req.Header.Set("Range", rangeHeader)
+		}
+
+		resp, err = p.client.Do(req)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Upstream error: %v", err), http.StatusBadGateway)
 			return
 		}
 	}
+	defer resp.Body.Close()
 
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -293,6 +337,12 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleHLSManifest(w http.ResponseWriter, resp *http.Response, originalURL string) {
+	// Forward non-200 responses as errors
+	if resp.StatusCode != http.StatusOK {
+		http.Error(w, fmt.Sprintf("Upstream error: %d", resp.StatusCode), resp.StatusCode)
+		return
+	}
+
 	baseURL, _ := url.Parse(originalURL)
 
 	// Read the entire manifest
