@@ -69,19 +69,27 @@ func (s *Service) Sync(ctx context.Context) error {
 	}
 	s.logger.Info("authenticated", "user", auth.UserInfo.Username, "status", auth.UserInfo.Status)
 
-	// Clear stale data before syncing
+	// Fetch all data from API before touching the DB
+	categories, err := s.client.GetLiveCategories()
+	if err != nil {
+		s.updateStatus("error", err.Error())
+		return fmt.Errorf("failed to get categories: %w", err)
+	}
+
+	streams, err := s.client.GetLiveStreams()
+	if err != nil {
+		s.updateStatus("error", err.Error())
+		return fmt.Errorf("failed to get live streams: %w", err)
+	}
+
+	s.logger.Info("fetched data from API", "categories", len(categories), "channels", len(streams))
+
+	// Clear and re-insert — all data is already in memory so this is fast
 	if err := s.db.DeleteAllChannels(); err != nil {
 		s.logger.Error("failed to clear channels", "error", err)
 	}
 	if err := s.db.DeleteAllCategories(); err != nil {
 		s.logger.Error("failed to clear categories", "error", err)
-	}
-
-	// Sync categories
-	categories, err := s.client.GetLiveCategories()
-	if err != nil {
-		s.updateStatus("error", err.Error())
-		return fmt.Errorf("failed to get categories: %w", err)
 	}
 
 	for _, cat := range categories {
@@ -95,14 +103,6 @@ func (s *Service) Sync(ctx context.Context) error {
 		if err := s.db.UpsertCategory(dbCat); err != nil {
 			s.logger.Error("failed to upsert category", "id", cat.CategoryID, "error", err)
 		}
-	}
-	s.logger.Info("synced categories", "count", len(categories))
-
-	// Sync all channels in one bulk fetch
-	streams, err := s.client.GetLiveStreams()
-	if err != nil {
-		s.updateStatus("error", err.Error())
-		return fmt.Errorf("failed to get live streams: %w", err)
 	}
 
 	for _, stream := range streams {
