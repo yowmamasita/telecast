@@ -781,26 +781,25 @@ function toggleFullscreen() {
 // Picture-in-Picture
 let pipRequestPending = false;
 let documentPipWindow = null; // For Document PIP API
+let pipCloneVideo = null; // Clone video for safe PiP (avoids Chrome GPU crash)
 
-// Check if Document Picture-in-Picture API is available (more stable than video PIP)
+// Check if Document Picture-in-Picture API is available (requires secure context)
 function hasDocumentPiP() {
   return 'documentPictureInPicture' in window;
 }
 
-// Try Document PIP API first (Chrome 116+), fallback to video PIP
+// Try Document PIP API first (Chrome 116+)
 async function enterDocumentPiP(video) {
   if (!hasDocumentPiP()) {
     return false;
   }
-  
+
   try {
-    // Request a new PIP window
     documentPipWindow = await window.documentPictureInPicture.requestWindow({
       width: video.videoWidth || 640,
       height: video.videoHeight || 360,
     });
-    
-    // Copy styles
+
     const style = documentPipWindow.document.createElement('style');
     style.textContent = `
       * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -808,22 +807,21 @@ async function enterDocumentPiP(video) {
       video { width: 100%; height: 100%; object-fit: contain; }
     `;
     documentPipWindow.document.head.appendChild(style);
-    
-    // Move video to PIP window
     documentPipWindow.document.body.appendChild(video);
-    
-    // Handle PIP window close
+
     documentPipWindow.addEventListener('pagehide', () => {
-      // Move video back to main document (only if wrapper doesn't already have a new video,
-      // which happens when the user switched channels while in PiP)
       const playerWrapper = document.getElementById('player-wrapper');
       if (playerWrapper && video && !playerWrapper.querySelector('video')) {
         playerWrapper.insertBefore(video, playerWrapper.firstChild);
+      } else if (video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
       }
       documentPipWindow = null;
       updatePiPIcon();
     });
-    
+
     return true;
   } catch (err) {
     console.error("Document PIP failed:", err.message);
@@ -835,67 +833,73 @@ async function enterDocumentPiP(video) {
   }
 }
 
+let pipCanvas = null;
+let pipCanvasRAF = null;
+let pipPopup = null; // Popup window for PiP (avoids Chrome PiP API crash)
+
+function destroyPipClone() {
+  if (pipCanvasRAF) {
+    cancelAnimationFrame(pipCanvasRAF);
+    pipCanvasRAF = null;
+  }
+  if (pipPopup && !pipPopup.closed) {
+    pipPopup.close();
+  }
+  pipPopup = null;
+  pipCloneVideo = null;
+  pipCanvas = null;
+}
+
 function togglePiP() {
   const video = document.getElementById("video-player");
   if (!video) return;
 
-  // Check if PiP is supported
-  if (!document.pictureInPictureEnabled && !hasDocumentPiP()) {
-    console.warn("Picture-in-Picture is not supported in this browser");
+  if (!hlsInstance && !documentPipWindow && !pipPopup) {
     return;
   }
 
-  // Check if video is allowed to enter PiP
-  if (video.disablePictureInPicture) {
-    return;
-  }
-
-  // Prevent multiple simultaneous PIP requests
   if (pipRequestPending) {
     return;
   }
 
-  // Check if we're in Document PIP mode
+  // Exit Document PiP
   if (documentPipWindow) {
     documentPipWindow.close();
     documentPipWindow = null;
+    updatePiPIcon();
     return;
   }
 
-  if (document.pictureInPictureElement) {
-    pipRequestPending = true;
-    document.exitPictureInPicture()
-      .catch(err => console.error("Error exiting PiP:", err.message))
-      .finally(() => { pipRequestPending = false; });
-  } else {
-    // Ensure video has metadata loaded before entering PiP
-    if (video.readyState < 1) {
-      video.addEventListener("loadedmetadata", function onMeta() {
-        video.removeEventListener("loadedmetadata", onMeta);
-        requestPiPSafely(video);
-      });
-      return;
-    }
-    
-    requestPiPSafely(video);
+  // Exit popup PiP
+  if (pipPopup && !pipPopup.closed) {
+    destroyPipClone();
+    updatePiPIcon();
+    return;
   }
+
+  // Enter PiP
+  if (video.readyState < 1) {
+    video.addEventListener("loadedmetadata", function onMeta() {
+      video.removeEventListener("loadedmetadata", onMeta);
+      requestPiPSafely(video);
+    });
+    return;
+  }
+
+  requestPiPSafely(video);
 }
 
-// Safely request PIP with error recovery
 async function requestPiPSafely(video) {
-  if (pipRequestPending) {
-    return;
-  }
-  
+  if (pipRequestPending) return;
+
   pipRequestPending = true;
-  
-  // Double-check video is still valid
-  if (!video || video.readyState < 1 || video.videoWidth === 0) {
+
+  if (!video || video.readyState < 1 || video.videoWidth === 0 || !hlsInstance) {
     pipRequestPending = false;
     return;
   }
-  
-  // Try Document PIP API first (more stable, available in Chrome 116+)
+
+  // Try Document PIP first (available over HTTPS/localhost)
   if (hasDocumentPiP()) {
     const success = await enterDocumentPiP(video);
     if (success) {
@@ -903,26 +907,72 @@ async function requestPiPSafely(video) {
       updatePiPIcon();
       return;
     }
-    // Fall through to video PIP if Document PIP failed
   }
-  
-  // Fallback to regular video PIP
-  // Use requestAnimationFrame to ensure we're in a good state for GPU operations
-  requestAnimationFrame(() => {
-    // Double-check video is still valid
-    if (!video || video.readyState < 1 || video.videoWidth === 0) {
+
+  // Popup window PiP — avoids Chrome's PiP API entirely which crashes after
+  // multiple HLS MediaSource attach/detach cycles
+  try {
+    destroyPipClone();
+
+    const scale = Math.min(1, 640 / (video.videoWidth || 640));
+    const cw = Math.round((video.videoWidth || 640) * scale);
+    const ch = Math.round((video.videoHeight || 360) * scale);
+
+    pipPopup = window.open('', 'telecast-pip',
+      'width=' + cw + ',height=' + ch +
+      ',left=' + (screen.width - cw - 30) +
+      ',top=' + (screen.height - ch - 100) +
+      ',toolbar=no,menubar=no,location=no,status=no');
+
+    if (!pipPopup) {
+      console.error("Popup blocked");
       pipRequestPending = false;
       return;
     }
-    
-    video.requestPictureInPicture()
-      .catch(err => {
-        console.error("Error entering video PiP:", err.message);
-      })
-      .finally(() => {
-        pipRequestPending = false;
-      });
-  });
+
+    pipPopup.document.write('<!DOCTYPE html><html><head><style>*{margin:0;padding:0}body{background:#000;overflow:hidden}canvas{width:100%;height:100%}</style></head><body></body></html>');
+    pipPopup.document.close();
+    pipPopup.document.title = 'Telecast PiP';
+
+    pipCanvas = pipPopup.document.createElement('canvas');
+    pipCanvas.width = cw;
+    pipCanvas.height = ch;
+    pipPopup.document.body.appendChild(pipCanvas);
+    const ctx = pipCanvas.getContext('2d');
+
+    function drawFrame() {
+      if (!pipCanvas || !pipPopup || pipPopup.closed) {
+        pipCanvasRAF = null;
+        destroyPipClone();
+        updatePiPIcon();
+        return;
+      }
+      const v = document.getElementById('video-player');
+      if (v && v.readyState >= 2) {
+        ctx.drawImage(v, 0, 0, cw, ch);
+      }
+      pipCanvasRAF = requestAnimationFrame(drawFrame);
+    }
+    drawFrame();
+
+    // Detect manual close
+    const closeCheck = setInterval(() => {
+      if (!pipPopup || pipPopup.closed) {
+        clearInterval(closeCheck);
+        pipPopup = null;
+        if (pipCanvasRAF) { cancelAnimationFrame(pipCanvasRAF); pipCanvasRAF = null; }
+        pipCanvas = null;
+        updatePiPIcon();
+      }
+    }, 500);
+
+    updatePiPIcon();
+  } catch (err) {
+    console.error("PiP error:", err.message);
+    destroyPipClone();
+  } finally {
+    pipRequestPending = false;
+  }
 }
 
 let lastInitTime = 0; // Track last initPlayer call time
@@ -933,16 +983,36 @@ document.addEventListener('htmx:beforeSwap', function(e) {
   if (e.detail.target && e.detail.target.id === 'player-container') {
     lastInitUrl = '';
     lastInitTime = 0;
+    stopStatsUpdates();
+
+    // Pause canvas draw loop but DON'T destroy the PiP — we'll reconnect
+    // it to the new video after the swap. Avoiding PiP exit/enter cycles
+    // prevents Chrome GPU compositor crashes.
+    if (pipCanvasRAF) {
+      cancelAnimationFrame(pipCanvasRAF);
+      pipCanvasRAF = null;
+    }
+
+    if (documentPipWindow) {
+      const pipVideo = documentPipWindow.document.querySelector('video');
+      if (pipVideo) {
+        pipVideo.pause();
+        pipVideo.removeAttribute('src');
+        pipVideo.load();
+      }
+      documentPipWindow.close();
+      documentPipWindow = null;
+    }
+
     if (hlsInstance) {
       hlsInstance.destroy();
       hlsInstance = null;
     }
-    stopStatsUpdates();
   }
 });
 
 function updatePiPIcon() {
-  const inPip = !!document.pictureInPictureElement || !!documentPipWindow;
+  const inPip = !!documentPipWindow || (pipPopup && !pipPopup.closed);
   const btn = document.getElementById("pip-btn");
   const icon = document.getElementById("pip-icon");
   if (!btn || !icon) return;
@@ -1179,16 +1249,12 @@ async function initPlayer(videoElement, streamUrl) {
   lastInitTime = now;
   lastInitUrl = streamUrl;
 
-  // Exit PIP if active before switching to prevent GPU context conflicts
+  // Don't destroy canvas PiP on channel switch — just reconnect it after the
+  // new video loads (see onManifestParsed). Destroying and recreating PiP
+  // causes Chrome GPU crashes. Only clean up Document PiP.
   if (documentPipWindow) {
     documentPipWindow.close();
     documentPipWindow = null;
-  } else if (document.pictureInPictureElement) {
-    try {
-      await document.exitPictureInPicture();
-    } catch (e) {
-      // Ignore errors
-    }
   }
 
   // Reset stats

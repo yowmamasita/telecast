@@ -305,14 +305,18 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 		strings.HasSuffix(strings.ToLower(streamURL), ".mp4")
 
 	if isSegment {
-		// Read and cache segments up to 10MB for 30 seconds
-		data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		ct := contentType
+		if ct == "" {
+			ct = "video/mp2t"
+		}
+
+		// Read the full segment
+		data, err := io.ReadAll(resp.Body)
 		if err == nil && len(data) > 0 {
-			ct := contentType
-			if ct == "" {
-				ct = "video/mp2t"
+			// Only cache if under 10MB
+			if len(data) <= 10*1024*1024 {
+				p.setStreamCache(streamURL, data, ct, 30*time.Second)
 			}
-			p.setStreamCache(streamURL, data, ct, 30*time.Second)
 
 			w.Header().Set("Content-Type", ct)
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
