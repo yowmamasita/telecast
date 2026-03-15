@@ -69,6 +69,14 @@ func (s *Service) Sync(ctx context.Context) error {
 	}
 	s.logger.Info("authenticated", "user", auth.UserInfo.Username, "status", auth.UserInfo.Status)
 
+	// Clear stale data before syncing
+	if err := s.db.DeleteAllChannels(); err != nil {
+		s.logger.Error("failed to clear channels", "error", err)
+	}
+	if err := s.db.DeleteAllCategories(); err != nil {
+		s.logger.Error("failed to clear categories", "error", err)
+	}
+
 	// Sync categories
 	categories, err := s.client.GetLiveCategories()
 	if err != nil {
