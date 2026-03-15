@@ -814,9 +814,10 @@ async function enterDocumentPiP(video) {
     
     // Handle PIP window close
     documentPipWindow.addEventListener('pagehide', () => {
-      // Move video back to main document
+      // Move video back to main document (only if wrapper doesn't already have a new video,
+      // which happens when the user switched channels while in PiP)
       const playerWrapper = document.getElementById('player-wrapper');
-      if (playerWrapper && video) {
+      if (playerWrapper && video && !playerWrapper.querySelector('video')) {
         playerWrapper.insertBefore(video, playerWrapper.firstChild);
       }
       documentPipWindow = null;
@@ -826,6 +827,10 @@ async function enterDocumentPiP(video) {
     return true;
   } catch (err) {
     console.error("Document PIP failed:", err.message);
+    if (documentPipWindow) {
+      documentPipWindow.close();
+      documentPipWindow = null;
+    }
     return false;
   }
 }
@@ -919,15 +924,6 @@ async function requestPiPSafely(video) {
       });
   });
 }
-
-// Update PiP button state when PiP mode changes
-document.addEventListener("DOMContentLoaded", function() {
-  const video = document.getElementById("video-player");
-  if (video) {
-    video.addEventListener("enterpictureinpicture", updatePiPIcon);
-    video.addEventListener("leavepictureinpicture", updatePiPIcon);
-  }
-});
 
 let lastInitTime = 0; // Track last initPlayer call time
 let lastInitUrl = ''; // Track last stream URL to prevent duplicates
