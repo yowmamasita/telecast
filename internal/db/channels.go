@@ -34,7 +34,7 @@ func (d *DB) GetChannels() ([]*Channel, error) {
 	rows, err := d.Query(`
 		SELECT id, stream_id, name, category_id, icon_url, epg_channel_id, num
 		FROM channels
-		ORDER BY num, name COLLATE NOCASE
+		ORDER BY name COLLATE NOCASE
 	`)
 	if err != nil {
 		return nil, err
@@ -57,7 +57,7 @@ func (d *DB) GetChannelsByCategory(categoryID string) ([]*Channel, error) {
 		SELECT id, stream_id, name, category_id, icon_url, epg_channel_id, num
 		FROM channels
 		WHERE category_id = ?
-		ORDER BY num, name COLLATE NOCASE
+		ORDER BY name COLLATE NOCASE
 	`, categoryID)
 	if err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func (d *DB) SearchChannels(query string) ([]*Channel, error) {
 		SELECT id, stream_id, name, category_id, icon_url, epg_channel_id, num
 		FROM channels
 		WHERE name LIKE ?
-		ORDER BY num, name COLLATE NOCASE
+		ORDER BY name COLLATE NOCASE
 		LIMIT 100
 	`, "%"+query+"%")
 	if err != nil {
