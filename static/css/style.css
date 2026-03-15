@@ -653,6 +653,7 @@ html, body {
   background: #000;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .player video {
@@ -801,6 +802,51 @@ html, body {
   border-radius: 50%;
   cursor: pointer;
   border: none;
+}
+
+/* Player Error Overlay */
+.player-error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.85);
+  z-index: 10;
+}
+
+.player-error-content {
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.player-error-icon {
+  color: #ef4444;
+  margin-bottom: 0.75rem;
+}
+
+.player-error-content p {
+  font-size: 0.9375rem;
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+.player-error-retry {
+  padding: 0.5rem 1.5rem;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.player-error-retry:hover {
+  background: var(--accent-hover);
 }
 
 /* Player Empty State */

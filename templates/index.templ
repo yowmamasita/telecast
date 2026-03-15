@@ -179,6 +179,15 @@ templ ChannelItem(ch *db.Channel, isActive bool) {
 templ Player(ch *db.Channel, streamURL string) {
 	<div class="player" data-stream-url={ streamURL } data-stream-id={ ch.StreamID } id="player-wrapper">
 		<video id="video-player" autoplay muted playsinline></video>
+		<div id="player-error" class="player-error" style="display:none">
+			<div class="player-error-content">
+				<svg class="player-error-icon" viewBox="0 0 24 24" fill="currentColor" width="48" height="48">
+					<path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/>
+				</svg>
+				<p id="player-error-message">Stream unavailable</p>
+				<button class="player-error-retry" onclick="retryStream()">Retry</button>
+			</div>
+		</div>
 		<div class="player-info">
 			<div class="player-info-left">
 				<h2 class="now-playing-title">{ ch.Name }</h2>

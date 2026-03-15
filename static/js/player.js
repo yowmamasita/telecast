@@ -1311,18 +1311,19 @@ async function initPlayer(videoElement, streamUrl) {
 }
 
 function onManifestParsed() {
+  hidePlayerError();
   const video = document.getElementById("video-player");
   if (!video) return;
-  
+
   const userMuted = localStorage.getItem("muted") === "true";
-  
+
   // If user has interacted, we can play unmuted (if they haven't muted)
   // Otherwise play muted to satisfy autoplay policy
   video.muted = hasUserInteracted ? userMuted : true;
   video.play().then(() => {
     updateVolumeIcon();
   }).catch(() => {});
-  
+
   // Start stats updates once manifest is parsed
   startStatsUpdates();
   updatePlayIcon();
@@ -1347,12 +1348,36 @@ function onHlsError(event, data) {
   if (data.fatal) {
     switch (data.type) {
       case Hls.ErrorTypes.NETWORK_ERROR:
+        // Manifest errors (4xx/5xx) mean the stream URL is broken — fail fast
+        if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_ERROR) {
+          const httpCode = data.response ? data.response.code : 0;
+          console.warn("Manifest load failed with HTTP", httpCode);
+          hlsInstance.destroy();
+          hlsInstance = null;
+          notifyStreamStopped();
+          if (httpCode >= 400) {
+            showPlayerError("Stream unavailable (HTTP " + httpCode + ") — try switching channels");
+          } else {
+            showPlayerError("Stream unavailable — failed to load");
+          }
+          return;
+        }
+        if (data.details === Hls.ErrorDetails.MANIFEST_LOAD_TIMEOUT) {
+          console.warn("Manifest load timed out");
+          hlsInstance.destroy();
+          hlsInstance = null;
+          notifyStreamStopped();
+          showPlayerError("Stream timed out — server not responding");
+          return;
+        }
+
         // Check if we've exceeded max retries
         if (networkRetryCount >= MAX_NETWORK_RETRIES) {
           console.warn("Max network retries exceeded, stopping playback");
           hlsInstance.destroy();
           hlsInstance = null;
           notifyStreamStopped();
+          showPlayerError("Stream unavailable — connection failed after multiple retries");
           return;
         }
 
@@ -1385,8 +1410,19 @@ function onHlsError(event, data) {
         hlsInstance.destroy();
         hlsInstance = null;
         notifyStreamStopped();
+        showPlayerError("Stream error — unable to play this channel");
         break;
     }
+  } else if (data.response && data.response.code >= 400) {
+    // Non-fatal HTTP errors from upstream (e.g. 405, 403, 404)
+    const code = data.response.code;
+    let message = "Stream error (" + code + ")";
+    if (code === 403) message = "Stream access denied (403)";
+    else if (code === 404) message = "Stream not found (404)";
+    else if (code === 405) message = "Stream rejected by server (405)";
+    else if (code === 410) message = "Stream no longer available (410)";
+    else if (code >= 500) message = "Stream server error (" + code + ")";
+    console.warn("[Player] Upstream HTTP error:", code, data.details);
   }
 }
 
@@ -1416,6 +1452,34 @@ document.addEventListener("htmx:afterSwap", function (event) {
     applyFavoritesFilter();
   }
 });
+
+function showPlayerError(message) {
+  const overlay = document.getElementById("player-error");
+  const msg = document.getElementById("player-error-message");
+  if (overlay && msg) {
+    msg.textContent = message;
+    overlay.style.display = "flex";
+  }
+}
+
+function hidePlayerError() {
+  const overlay = document.getElementById("player-error");
+  if (overlay) {
+    overlay.style.display = "none";
+  }
+}
+
+function retryStream() {
+  hidePlayerError();
+  const wrapper = document.getElementById("player-wrapper");
+  const video = document.getElementById("video-player");
+  if (wrapper && video) {
+    const url = wrapper.dataset.streamUrl;
+    lastInitUrl = null;
+    lastInitTime = 0;
+    initPlayer(video, url);
+  }
+}
 
 // Notify server that stream stopped (allows health checks to resume)
 function notifyStreamStopped() {
