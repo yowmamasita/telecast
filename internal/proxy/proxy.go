@@ -52,11 +52,12 @@ func NewWithMaxConnections(maxConnections int) *Proxy {
 	// Use higher limits for CDN/segment servers which need concurrent fetches
 	transport := &http.Transport{
 		MaxIdleConns:        100,
-		MaxIdleConnsPerHost: 10,
-		MaxConnsPerHost:     10,
+		MaxIdleConnsPerHost: 20,
+		MaxConnsPerHost:     20,
 		IdleConnTimeout:     90 * time.Second,
-		DisableCompression:  false,
-		ForceAttemptHTTP2:   false, // Stick to HTTP/1.1 for better compatibility
+		DisableCompression:  true, // Don't ask upstream to compress video data
+		ForceAttemptHTTP2:   false,
+		ResponseHeaderTimeout: 15 * time.Second,
 	}
 
 	p := &Proxy{
@@ -303,15 +304,15 @@ func (p *Proxy) HandleStream(w http.ResponseWriter, r *http.Request) {
 		strings.HasSuffix(strings.ToLower(streamURL), ".m4s") ||
 		strings.HasSuffix(strings.ToLower(streamURL), ".mp4")
 
-	if isSegment && resp.ContentLength > 0 && resp.ContentLength < 10*1024*1024 {
-		// Cache segments up to 10MB for 60 seconds
-		data, err := io.ReadAll(resp.Body)
-		if err == nil {
+	if isSegment {
+		// Read and cache segments up to 10MB for 30 seconds
+		data, err := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		if err == nil && len(data) > 0 {
 			ct := contentType
 			if ct == "" {
 				ct = "video/mp2t"
 			}
-			p.setStreamCache(streamURL, data, ct, 60*time.Second)
+			p.setStreamCache(streamURL, data, ct, 30*time.Second)
 
 			w.Header().Set("Content-Type", ct)
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))

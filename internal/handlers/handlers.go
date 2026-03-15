@@ -32,25 +32,9 @@ func New(database *db.DB, accountManager *accounts.Manager, proxyService *proxy.
 
 // Index renders the main page
 func (h *Handlers) Index(w http.ResponseWriter, r *http.Request) {
-	categories, err := h.db.GetCategories()
-	if err != nil {
-		h.logger.Error("failed to get categories", "error", err)
-		http.Error(w, "Failed to load categories", http.StatusInternalServerError)
-		return
-	}
-
-	channels, err := h.db.GetChannels()
-	if err != nil {
-		h.logger.Error("failed to get channels", "error", err)
-		http.Error(w, "Failed to load channels", http.StatusInternalServerError)
-		return
-	}
-
 	count, _ := h.db.GetChannelCount()
 
 	data := templates.IndexData{
-		Categories:   categories,
-		Channels:     channels,
 		ChannelCount: count,
 	}
 
@@ -97,13 +81,9 @@ func (h *Handlers) Play(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Full page render
-	categories, _ := h.db.GetCategories()
-	channels, _ := h.db.GetChannels()
 	count, _ := h.db.GetChannelCount()
 
 	data := templates.IndexData{
-		Categories:     categories,
-		Channels:       channels,
 		ChannelCount:   count,
 		CurrentChannel: channel,
 		StreamURL:      streamURL,
@@ -160,7 +140,30 @@ func (h *Handlers) APIChannels(w http.ResponseWriter, r *http.Request) {
 		h.jsonError(w, "Failed to get channels", http.StatusInternalServerError)
 		return
 	}
-	h.jsonResponse(w, channels)
+
+	type channelJSON struct {
+		StreamID   string `json:"stream_id"`
+		Name       string `json:"name"`
+		CategoryID string `json:"category_id,omitempty"`
+		IconURL    string `json:"icon_url,omitempty"`
+	}
+
+	result := make([]channelJSON, 0, len(channels))
+	for _, ch := range channels {
+		c := channelJSON{
+			StreamID: ch.StreamID,
+			Name:     ch.Name,
+		}
+		if ch.CategoryID.Valid {
+			c.CategoryID = ch.CategoryID.String
+		}
+		if ch.IconURL.Valid {
+			c.IconURL = ch.IconURL.String
+		}
+		result = append(result, c)
+	}
+
+	h.jsonResponse(w, result)
 }
 
 // APICategories returns categories as JSON
@@ -170,7 +173,21 @@ func (h *Handlers) APICategories(w http.ResponseWriter, r *http.Request) {
 		h.jsonError(w, "Failed to get categories", http.StatusInternalServerError)
 		return
 	}
-	h.jsonResponse(w, categories)
+
+	type categoryJSON struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+
+	result := make([]categoryJSON, 0, len(categories))
+	for _, cat := range categories {
+		result = append(result, categoryJSON{
+			ID:   cat.CategoryID,
+			Name: cat.Name,
+		})
+	}
+
+	h.jsonResponse(w, result)
 }
 
 // APISync triggers a manual sync

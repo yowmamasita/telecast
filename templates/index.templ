@@ -1,14 +1,11 @@
 package templates
 
 import (
-	"encoding/json"
 	"fmt"
 	"github.com/bensarmiento/telecast/internal/db"
 )
 
 type IndexData struct {
-	Categories     []*db.Category
-	Channels       []*db.Channel
 	ChannelCount   int
 	CurrentChannel *db.Channel
 	StreamURL      string
@@ -55,13 +52,8 @@ templ Index(data IndexData) {
 						<button id="show-all-btn" onclick="toggleAllCategories(true)">Show All</button>
 						<button id="hide-all-btn" onclick="toggleAllCategories(false)">Hide All</button>
 					</div>
-					<div class="categories-popup-list">
-						for _, cat := range data.Categories {
-							<label class="category-filter-item">
-								<input type="checkbox" checked data-category-id={ cat.CategoryID } onchange="toggleCategory(this.dataset.categoryId)"/>
-								<span>{ cat.Name }</span>
-							</label>
-						}
+					<div class="categories-popup-list" id="categories-popup-list">
+						<!-- Populated by JS -->
 					</div>
 				</div>
 				<div class="search-box">
@@ -76,7 +68,7 @@ templ Index(data IndexData) {
 				<nav id="channel-list" class="channel-list">
 					<!-- Virtual scroller will render here -->
 				</nav>
-				@ChannelData(data.Categories, data.Channels, data.CurrentChannel)
+				@ChannelDataLazy(data.CurrentChannel)
 			</aside>
 			<button class="sidebar-toggle sidebar-toggle-floating" onclick="toggleSidebar()" title="Toggle sidebar (S)">
 				<svg viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
@@ -167,7 +159,7 @@ templ ChannelItem(ch *db.Channel, isActive bool) {
 		if ch.IconURL.Valid && ch.IconURL.String != "" {
 			<img
 				class="channel-icon"
-				src={ "/api/image?url=" + ch.IconURL.String }
+				src={ ch.IconURL.String }
 				alt=""
 				loading="lazy"
 				onerror="this.style.display='none'"
@@ -308,31 +300,55 @@ templ SearchResults(channels []*db.Channel, current *db.Channel) {
 	}
 }
 
-// ChannelData outputs JSON data and initializes virtual scroller
-templ ChannelData(categories []*db.Category, channels []*db.Channel, current *db.Channel) {
-	@channelDataScript(categories, channels, current)
+// ChannelDataLazy loads channel data via API instead of embedding in HTML
+templ ChannelDataLazy(current *db.Channel) {
+	if current != nil {
+		@channelDataLazyScript(current.StreamID)
+	} else {
+		@channelDataLazyScript("")
+	}
 }
 
-func channelDataScript(categories []*db.Category, channels []*db.Channel, current *db.Channel) templ.Component {
-	jsonData := channelsToJSON(categories, channels, current)
+func channelDataLazyScript(activeStreamID string) templ.Component {
 	return templ.Raw(`<script>
-		window.__CHANNEL_DATA__ = ` + jsonData + `;
 		(function() {
 			function initVirtualScroller() {
-				const data = window.__CHANNEL_DATA__;
-				if (!data) return;
+				const container = document.getElementById('channel-list');
+				if (!container) return;
 
-				try {
-					const container = document.getElementById('channel-list');
-					if (!container) return;
+				// Fetch channel data from API
+				Promise.all([
+					fetch('/api/categories').then(r => r.json()),
+					fetch('/api/channels').then(r => r.json())
+				]).then(([categories, channels]) => {
+					const data = {
+						categories: categories.map(c => ({ id: c.id, name: c.name })),
+						channels: channels.map(c => ({
+							streamId: c.stream_id,
+							name: c.name,
+							categoryId: c.category_id || '',
+							iconUrl: c.icon_url || ''
+						}))
+					};
 
 					virtualChannelList = new VirtualChannelList(container);
 					virtualChannelList.setData(data.categories, data.channels);
 
-					if (data.activeStreamId) {
-						virtualChannelList.setActive(data.activeStreamId);
-						// Scroll to active channel after a short delay to ensure render is complete
+					var activeId = '` + activeStreamID + `';
+					if (activeId) {
+						virtualChannelList.setActive(activeId);
 						setTimeout(() => virtualChannelList.scrollToActive(), 100);
+					}
+
+					// Populate categories popup
+					const catList = document.getElementById('categories-popup-list');
+					if (catList) {
+						catList.innerHTML = data.categories.map(c =>
+							'<label class="category-filter-item">' +
+							'<input type="checkbox" checked data-category-id="' + c.id + '" onchange="toggleCategory(this.dataset.categoryId)"/>' +
+							'<span>' + c.name.replace(/</g, '&lt;') + '</span>' +
+							'</label>'
+						).join('');
 					}
 
 					// Set up search
@@ -347,11 +363,10 @@ func channelDataScript(categories []*db.Category, channels []*db.Channel, curren
 						});
 					}
 
-					// Update favorites button state
 					updateFavoritesButton();
-				} catch (e) {
-					console.error('Failed to initialize virtual scroller:', e);
-				}
+				}).catch(e => {
+					console.error('Failed to load channel data:', e);
+				});
 			}
 
 			if (document.readyState === 'loading') {
@@ -361,55 +376,4 @@ func channelDataScript(categories []*db.Category, channels []*db.Channel, curren
 			}
 		})();
 	</script>`)
-}
-
-func channelsToJSON(categories []*db.Category, channels []*db.Channel, current *db.Channel) string {
-	type catJSON struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}
-	type chJSON struct {
-		StreamID   string `json:"streamId"`
-		Name       string `json:"name"`
-		CategoryID string `json:"categoryId,omitempty"`
-		IconURL    string `json:"iconUrl,omitempty"`
-	}
-	type dataJSON struct {
-		Categories     []catJSON `json:"categories"`
-		Channels       []chJSON  `json:"channels"`
-		ActiveStreamID string    `json:"activeStreamId,omitempty"`
-	}
-
-	data := dataJSON{
-		Categories: make([]catJSON, 0, len(categories)),
-		Channels:   make([]chJSON, 0, len(channels)),
-	}
-
-	for _, cat := range categories {
-		data.Categories = append(data.Categories, catJSON{
-			ID:   cat.CategoryID,
-			Name: cat.Name,
-		})
-	}
-
-	for _, ch := range channels {
-		c := chJSON{
-			StreamID: ch.StreamID,
-			Name:     ch.Name,
-		}
-		if ch.CategoryID.Valid {
-			c.CategoryID = ch.CategoryID.String
-		}
-		if ch.IconURL.Valid {
-			c.IconURL = ch.IconURL.String
-		}
-		data.Channels = append(data.Channels, c)
-	}
-
-	if current != nil {
-		data.ActiveStreamID = current.StreamID
-	}
-
-	b, _ := json.Marshal(data)
-	return string(b)
 }

@@ -8,7 +8,7 @@ let hasUserInteracted = false;
 // Retry tracking for error recovery
 let networkRetryCount = 0;
 let networkRetryTimeout = null;
-const MAX_NETWORK_RETRIES = 5;
+const MAX_NETWORK_RETRIES = 10;
 const INITIAL_RETRY_DELAY = 1000; // 1 second
 
 // Track user interaction
@@ -312,7 +312,7 @@ class VirtualChannelList {
     a.style.height = `${this.itemHeight}px`;
 
     const iconHtml = item.iconUrl
-      ? `<img class="channel-icon" src="/api/image?url=${encodeURIComponent(item.iconUrl)}" alt="" loading="lazy" onerror="this.style.display='none'">`
+      ? `<img class="channel-icon" src="${item.iconUrl}" alt="" loading="lazy" onerror="this.style.display='none'">`
       : '<div class="channel-icon-placeholder"></div>';
 
     a.innerHTML = `
@@ -342,6 +342,15 @@ class VirtualChannelList {
       e.preventDefault();
       self.setActive(item.streamId);
       
+      // Clean up current player before loading new one
+      lastInitUrl = '';
+      lastInitTime = 0;
+      if (hlsInstance) {
+        hlsInstance.destroy();
+        hlsInstance = null;
+      }
+      stopStatsUpdates();
+
       // Trigger HTMX request manually
       if (typeof htmx !== 'undefined') {
         htmx.ajax('GET', `/play/${item.streamId}`, {
@@ -923,6 +932,19 @@ document.addEventListener("DOMContentLoaded", function() {
 let lastInitTime = 0; // Track last initPlayer call time
 let lastInitUrl = ''; // Track last stream URL to prevent duplicates
 
+// Reset player state before HTMX swaps so new player can initialize
+document.addEventListener('htmx:beforeSwap', function(e) {
+  if (e.detail.target && e.detail.target.id === 'player-container') {
+    lastInitUrl = '';
+    lastInitTime = 0;
+    if (hlsInstance) {
+      hlsInstance.destroy();
+      hlsInstance = null;
+    }
+    stopStatsUpdates();
+  }
+});
+
 function updatePiPIcon() {
   const inPip = !!document.pictureInPictureElement || !!documentPipWindow;
   const btn = document.getElementById("pip-btn");
@@ -1246,27 +1268,30 @@ async function initPlayer(videoElement, streamUrl) {
     
     hlsInstance = new Hls({
         enableWorker: true,
-        lowLatencyMode: true,
-        // Smaller buffers for faster channel switching
+        lowLatencyMode: false,
+        // Larger buffers to survive spotty connections
         backBufferLength: 30,
-        maxBufferLength: 10,
-        maxMaxBufferLength: 30,
-        maxBufferSize: 30 * 1000 * 1000,
+        maxBufferLength: 30,
+        maxMaxBufferLength: 60,
+        maxBufferSize: 60 * 1000 * 1000,
         maxBufferHole: 0.5,
         // Start at auto level for fastest initial load
         startLevel: -1,
-        // Higher initial estimate = start at higher quality faster
-        abrEwmaDefaultEstimate: 1000000,
+        // Conservative ABR — react quickly to drops, slowly to gains
+        abrEwmaDefaultEstimate: 500000,
         abrEwmaFastLive: 3,
         abrEwmaSlowLive: 9,
-        // Faster fragment loading
-        maxLoadingDelay: 2,
-        fragLoadingTimeOut: 10000,
-        fragLoadingMaxRetry: 2,
-        fragLoadingRetryDelay: 500,
-        manifestLoadingTimeOut: 5000,
-        manifestLoadingMaxRetry: 2,
-        levelLoadingTimeOut: 5000,
+        // Generous timeouts and retries for unreliable connections
+        maxLoadingDelay: 4,
+        fragLoadingTimeOut: 20000,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 1000,
+        manifestLoadingTimeOut: 15000,
+        manifestLoadingMaxRetry: 4,
+        manifestLoadingRetryDelay: 1000,
+        levelLoadingTimeOut: 15000,
+        levelLoadingMaxRetry: 4,
+        levelLoadingRetryDelay: 1000,
         // Start loading immediately
         startFragPrefetch: true,
     });
