@@ -98,45 +98,36 @@ func (s *Service) Sync(ctx context.Context) error {
 	}
 	s.logger.Info("synced categories", "count", len(categories))
 
-	// Sync channels by category to avoid provider connection timeouts
-	totalChannels := 0
-	failedCategories := 0
-	for _, cat := range categories {
-		streams, err := s.client.GetLiveStreamsByCategory(cat.CategoryID)
-		if err != nil {
-			failedCategories++
-			s.logger.Error("failed to get streams for category", "category", cat.CategoryName, "id", cat.CategoryID, "error", err)
-			continue
-		}
-
-		for _, stream := range streams {
-			ch := &db.Channel{
-				StreamID: strconv.Itoa(stream.StreamID),
-				Name:     stream.Name,
-				Num:      stream.Num,
-			}
-			if stream.CategoryID != "" {
-				ch.CategoryID = sql.NullString{String: stream.CategoryID, Valid: true}
-			}
-			if stream.StreamIcon != "" {
-				ch.IconURL = sql.NullString{String: stream.StreamIcon, Valid: true}
-			}
-			if stream.EPGChannelID != "" {
-				ch.EPGChannelID = sql.NullString{String: stream.EPGChannelID, Valid: true}
-			}
-			if err := s.db.UpsertChannel(ch); err != nil {
-				s.logger.Error("failed to upsert channel", "id", stream.StreamID, "error", err)
-			}
-		}
-		totalChannels += len(streams)
+	// Sync all channels in one bulk fetch
+	streams, err := s.client.GetLiveStreams()
+	if err != nil {
+		s.updateStatus("error", err.Error())
+		return fmt.Errorf("failed to get live streams: %w", err)
 	}
 
-	if failedCategories > 0 {
-		s.logger.Warn("some categories failed to sync", "failed", failedCategories, "total", len(categories))
+	for _, stream := range streams {
+		ch := &db.Channel{
+			StreamID: strconv.Itoa(stream.StreamID),
+			Name:     stream.Name,
+			Num:      stream.Num,
+		}
+		if stream.CategoryID != "" {
+			ch.CategoryID = sql.NullString{String: stream.CategoryID, Valid: true}
+		}
+		if stream.StreamIcon != "" {
+			ch.IconURL = sql.NullString{String: stream.StreamIcon, Valid: true}
+		}
+		if stream.EPGChannelID != "" {
+			ch.EPGChannelID = sql.NullString{String: stream.EPGChannelID, Valid: true}
+		}
+		if err := s.db.UpsertChannel(ch); err != nil {
+			s.logger.Error("failed to upsert channel", "id", stream.StreamID, "error", err)
+		}
 	}
+	totalChannels := len(streams)
 
 	duration := time.Since(startTime)
-	s.logger.Info("sync completed", "channels", totalChannels, "categories", len(categories), "failed_categories", failedCategories, "duration", duration)
+	s.logger.Info("sync completed", "channels", totalChannels, "categories", len(categories), "duration", duration)
 	s.updateStatus("success", "")
 
 	return nil
